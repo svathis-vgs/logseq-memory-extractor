@@ -209,7 +209,7 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
                 continue
             slug = re.sub(r"[^a-z0-9-]+", "-", item.get("slug", "untitled").lower()).strip("-")
             filename = f"{category}-{slug}"
-            title = slug.replace("-", " ").title()
+            title = f"{category.title()}: {slug.replace('-', ' ').title()}"
             content = _page_content(
                 type_=type_name,
                 title=title,
