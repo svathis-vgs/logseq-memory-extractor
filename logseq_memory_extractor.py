@@ -249,40 +249,65 @@ def write_session(insights: dict, project_name: str,
     (sessions_dir / f"{session_slug}.md").write_text("\n".join(lines).lstrip("\n"))
 
 
-def update_index(written_links: list[str], session_title: str, project_name: str) -> None:
-    """Append a new session block to claude/index.md."""
+def update_index() -> None:
+    """Keep the index fresh by updating its updated:: date. Sessions and
+    insights are discovered automatically via Logseq queries — no manual
+    listing needed."""
     today = logseq_date()
     index_path = LOGSEQ_PAGES_DIR / "claude" / "index.md"
     index_path.parent.mkdir(parents=True, exist_ok=True)
 
-    entry = "\n".join([
-        f"- ## {today} — {project_name}",
-        f"  - [[{session_title}]]",
-    ] + [f"  - {link}" for link in written_links] + [""]) + "\n"
-
     if not index_path.exists():
-        header = "\n".join([
+        index_path.write_text("\n".join([
             f"updated:: {today}",
             "",
             "- # Claude Code Memory Index",
-            "  - Auto-generated index. Add your own notes below.",
-            "",
-            "- ## Query: all patterns",
-            "  - {{query (property type pattern)}}",
-            "",
-            "- ## Query: all mistakes",
-            "  - {{query (property type mistake)}}",
-            "",
-            "- ## Query: all decisions",
-            "  - {{query (property type decision)}}",
+            "  - Auto-generated. Add your own notes below the query sections.",
             "",
             "- ## Sessions",
+            "  - {{query (property type [[session]])}}",
+            "    query-table:: true",
+            "    query-sort-by:: date",
+            "    query-sort-desc:: true",
+            "    query-properties:: [:title :date :project]",
             "",
-        ]) + "\n"
-        index_path.write_text(header + entry)
+            "- ## Patterns",
+            "  collapsed:: true",
+            "  - {{query (property type [[pattern]])}}",
+            "    query-table:: true",
+            "    query-sort-by:: date",
+            "    query-sort-desc:: true",
+            "    query-properties:: [:title :date :project :tags]",
+            "",
+            "- ## Mistakes",
+            "  collapsed:: true",
+            "  - {{query (property type [[mistake]])}}",
+            "    query-table:: true",
+            "    query-sort-by:: date",
+            "    query-sort-desc:: true",
+            "    query-properties:: [:title :date :project :tags]",
+            "",
+            "- ## Decisions",
+            "  collapsed:: true",
+            "  - {{query (property type [[decision]])}}",
+            "    query-table:: true",
+            "    query-sort-by:: date",
+            "    query-sort-desc:: true",
+            "    query-properties:: [:title :date :project :tags]",
+            "",
+            "- ## Context",
+            "  collapsed:: true",
+            "  - {{query (property type [[context]])}}",
+            "    query-table:: true",
+            "    query-sort-by:: date",
+            "    query-sort-desc:: true",
+            "    query-properties:: [:title :date :project :tags]",
+            "",
+        ]))
     else:
         existing = index_path.read_text()
-        index_path.write_text(existing + entry)
+        updated = re.sub(r'^updated::.*$', f"updated:: {today}", existing, count=1, flags=re.MULTILINE)
+        index_path.write_text(updated)
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -320,7 +345,7 @@ def main() -> None:
 
     written_links = write_pages(insights, project_name, session_short, session_slug, session_title)
     write_session(insights, project_name, session_short, session_slug, written_links)
-    update_index(written_links, session_title, project_name)
+    update_index()
 
     print(
         f"[logseq-memory] {len(written_links)} insight(s) → {LOGSEQ_PAGES_DIR}/claude/",
