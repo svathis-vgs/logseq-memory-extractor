@@ -234,7 +234,7 @@ def write_session(insights: dict, project_name: str,
 
     session_date = today.strip("[]").replace("/", "-")  # [[2026/04/21]] → 2026-04-21
     lines = [
-        f"title:: Session {session_date} — {project_name}",
+        f"title:: Session {session_date} {session_id} — {project_name}",
         "type:: [[session]]",
         f"date:: {today}",
         f"project:: [[{project_name}]]",
