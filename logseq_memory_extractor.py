@@ -218,7 +218,7 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
                 session_slug=session_slug,
             )
             (subdir / f"{filename}.md").write_text(content.lstrip("\n"))
-            written.append(f"[[claude/{key}/{filename}]]")
+            written.append(f"[[{filename}]]")
 
     return written
 
