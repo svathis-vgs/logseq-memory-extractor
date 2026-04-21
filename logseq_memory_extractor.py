@@ -176,7 +176,7 @@ def _page_content(type_: str, summary: str, detail: str, tags: list,
         f"  - {detail}",
         "",
         "- ## Session",
-        f"  - [[claude/sessions/{session_slug}]]",
+        f"  - [[{session_slug}]]",
         "",
     ]
     return "\n".join(lines)
