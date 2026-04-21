@@ -156,7 +156,7 @@ def logseq_date() -> str:
 # ── Logseq page writers ────────────────────────────────────────────────────────
 
 def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
-                  project: str, session_id: str, session_slug: str) -> str:
+                  project: str, session_id: str, session_title: str) -> str:
     today = logseq_date()
     tag_str = " ".join(f"[[{t}]]" for t in tags) if tags else ""
     lines = [
@@ -177,13 +177,13 @@ def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
         f"  - {detail}",
         "",
         "- ## Session",
-        f"  - [[{session_slug}]]",
+        f"  - [[{session_title}]]",
         "",
     ]
     return "\n".join(lines)
 
 
-def write_pages(insights: dict, project_name: str, session_id: str, session_slug: str) -> list[str]:
+def write_pages(insights: dict, project_name: str, session_id: str, session_slug: str, session_title: str) -> list[str]:
     """Write one page per insight. Returns list of [[namespace/links]]."""
     written: list[str] = []
     type_map = {
@@ -218,7 +218,7 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
                 tags=item.get("tags", []),
                 project=project_name,
                 session_id=session_id,
-                session_slug=session_slug,
+                session_title=session_title,
             )
             (subdir / f"{filename}.md").write_text(content.lstrip("\n"))
             written.append(f"[[{filename}]]")
@@ -249,7 +249,7 @@ def write_session(insights: dict, project_name: str,
     (sessions_dir / f"{session_slug}.md").write_text("\n".join(lines).lstrip("\n"))
 
 
-def update_index(written_links: list[str], session_slug: str, project_name: str) -> None:
+def update_index(written_links: list[str], session_title: str, project_name: str) -> None:
     """Append a new session block to claude/index.md."""
     today = logseq_date()
     index_path = LOGSEQ_PAGES_DIR / "claude" / "index.md"
@@ -257,7 +257,7 @@ def update_index(written_links: list[str], session_slug: str, project_name: str)
 
     entry = "\n".join([
         f"- ## {today} — {project_name}",
-        f"  - [[claude/sessions/{session_slug}]]",
+        f"  - [[{session_title}]]",
     ] + [f"  - {link}" for link in written_links] + [""]) + "\n"
 
     if not index_path.exists():
@@ -316,10 +316,11 @@ def main() -> None:
     today = date.today().isoformat()
     session_short = (session_id or "unknown")[:8]
     session_slug = f"{today}-{session_short}"
+    session_title = f"Session {today} {session_short} — {project_name}"
 
-    written_links = write_pages(insights, project_name, session_short, session_slug)
+    written_links = write_pages(insights, project_name, session_short, session_slug, session_title)
     write_session(insights, project_name, session_short, session_slug, written_links)
-    update_index(written_links, session_slug, project_name)
+    update_index(written_links, session_title, project_name)
 
     print(
         f"[logseq-memory] {len(written_links)} insight(s) → {LOGSEQ_PAGES_DIR}/claude/",
