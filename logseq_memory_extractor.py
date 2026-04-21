@@ -155,11 +155,12 @@ def logseq_date() -> str:
 
 # ── Logseq page writers ────────────────────────────────────────────────────────
 
-def _page_content(type_: str, summary: str, detail: str, tags: list,
+def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
                   project: str, session_id: str, session_slug: str) -> str:
     today = logseq_date()
     tag_str = " ".join(f"[[{t}]]" for t in tags) if tags else ""
     lines = [
+        f"title:: {title}",
         f"type:: {type_}",
         f"date:: {today}",
         f"project:: [[{project}]]",
@@ -208,8 +209,10 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
                 continue
             slug = re.sub(r"[^a-z0-9-]+", "-", item.get("slug", "untitled").lower()).strip("-")
             filename = f"{category}-{slug}"
+            title = slug.replace("-", " ").title()
             content = _page_content(
                 type_=type_name,
+                title=title,
                 summary=item.get("summary", ""),
                 detail=item.get("detail", ""),
                 tags=item.get("tags", []),
@@ -229,7 +232,9 @@ def write_session(insights: dict, project_name: str,
     sessions_dir = LOGSEQ_PAGES_DIR / "claude" / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
+    session_date = today.strip("[]").replace("/", "-")  # [[2026/04/21]] → 2026-04-21
     lines = [
+        f"title:: Session {session_date} — {project_name}",
         "type:: [[session]]",
         f"date:: {today}",
         f"project:: [[{project_name}]]",
