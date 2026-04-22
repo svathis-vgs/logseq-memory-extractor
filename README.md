@@ -9,7 +9,8 @@ Session ends
   → Stop hook fires logseq_memory_extractor.py
   → Script reads the session transcript (JSONL)
   → Calls the claude CLI to extract structured insights
-  → Writes Logseq pages under pages/claude/
+  → Writes one Logseq page per insight under pages/claude/
+  → Updates the updated:: date on the master index
   → CLAUDE.md injects the index back into the next session
 ```
 
@@ -18,7 +19,7 @@ Every time a Claude Code session ends, the script:
 1. Reads the session transcript from `~/.claude/projects/`
 2. Sends the last ~3 000 tokens to `claude -p` for analysis
 3. Writes one Logseq page per insight, organised by category
-4. Appends a new entry to the master index (`claude/index.md`)
+4. Bumps the `updated::` date on `claude/index.md` — all sessions and insights are discovered automatically via Logseq queries, nothing is appended manually
 
 At the start of the next session, Claude reads `~/.claude/CLAUDE.md` which points to the index, closing the memory loop.
 
@@ -76,7 +77,7 @@ Create `~/.claude/CLAUDE.md`:
 ## Persistent Memory
 
 At the start of each session, read `~/path/to/your/vault/pages/claude/index.md`
-for accumulated patterns, mistakes, and decisions from previous sessions.
+for accumulated patterns, mistakes, decisions, and context from previous sessions.
 ```
 
 ## Vault structure
@@ -86,7 +87,7 @@ The script writes into a `claude/` namespace inside your existing Logseq vault:
 ```
 pages/
 └── claude/
-    ├── index.md                          ← master index, auto-appended each session
+    ├── index.md                          ← master index, query-driven
     ├── patterns/
     │   └── pattern-<slug>.md
     ├── mistakes/
@@ -99,41 +100,67 @@ pages/
         └── 2026-04-21-<session-id>.md
 ```
 
-Using real subdirectories means Logseq treats each path as a proper namespace: `claude/patterns/pattern-use-pathlib` is a distinct page with `[[claude]]` and `[[patterns]]` in its hierarchy.
-
 ## Logseq page format
 
-Every insight page uses Logseq's native property syntax (must start on line 1):
+Every insight page uses Logseq's native property syntax starting on line 1:
 
 ```
+title:: Pattern: Use Pathlib Over Os
 type:: [[pattern]]
 date:: [[2026/04/21]]
 project:: [[my-project]]
-session-id:: abc12345
-tags:: [[python]] [[testing]]
+session:: [[Session 2026-04-21 abc12345 — my-project]]
+tags:: [[python]] [[filesystem]]
 
 - ## Summary
   - One-sentence description of the insight.
 
 - ## Detail
-  - Full explanation, approach, or reasoning.
-
-- ## Session
-  - [[claude/sessions/2026-04-21-abc12345]]
+  - Context sentence describing when this applies:
+    - First step or key point
+    - Second step or key point
+    - Third step or key point
 ```
 
-- **`type::`** links to a category page (`[[pattern]]`, `[[mistake]]`, `[[decision]]`, `[[context]]`, `[[session]]`) — clickable in Logseq's graph
-- **`date::`** links to the Logseq journal entry for that day
-- **`project::`** links to a project page, grouping all memory from the same codebase
+Properties:
 
-### Querying in Logseq
+- **`title::`** — unique page identifier in Logseq; prefixed with category (`Pattern:`, `Decision:`, etc.) to guarantee global uniqueness across all subdirectories
+- **`type::`** — links to a category page (`[[pattern]]`, `[[mistake]]`, `[[decision]]`, `[[context]]`, `[[session]]`) — clickable in Logseq's graph
+- **`date::`** — links to the Logseq journal entry for that day (`[[yyyy/MM/dd]]` format)
+- **`project::`** — links to a project page, grouping all memory from the same codebase
+- **`session::`** — links to the session page that produced this insight; creates a graph edge so the session's backlinks panel lists all insights it generated
 
-Drop these blocks anywhere in your graph to see all entries by category:
+Session pages additionally carry `exclude-from-graph-view:: true` to keep the graph focused on long-lived insights rather than transient session nodes.
+
+### Detail field formatting
+
+When a detail contains steps, actions, or a list of items, the script writes them as Logseq outline sub-bullets:
 
 ```
-{{query (property type pattern)}}
-{{query (property type mistake)}}
-{{query (property type decision)}}
+- ## Detail
+  - When consumer lag spikes suddenly:
+    - Classify spike shape — vertical jump means consumption stopped
+    - Check consumer pods for restarts, OOMKills, or rebalances
+    - Grep consumer logs ±5 min for errors or stuck handlers
+```
+
+Single-paragraph explanations remain as a flat bullet.
+
+### Index page
+
+`claude/index.md` uses Logseq queries to auto-discover all pages by type — nothing is appended to it on each run:
+
+```
+- ## Sessions
+  - {{query (property type [[session]])}}
+    query-table:: true
+    query-sort-by:: date
+    query-sort-desc:: true
+    query-properties:: [:title :date :project]
+
+- ## Patterns
+  - {{query (property type [[pattern]])}}
+    ...
 ```
 
 ## Insight categories
@@ -155,15 +182,14 @@ Run extraction mid-session without closing the app using the `/extract-memory` c
 Create `~/.claude/commands/extract-memory.md`:
 
 ```markdown
-Run the Logseq memory extractor to capture insights from this session.
+Run the Logseq memory extractor to capture insights from this session into the Logseq graph.
 
 Execute this command:
-```
-echo '{"session_id": "manual", "cwd": "/path/to/current/project"}' | \
-  python3 ~/.claude/hooks/logseq_memory_extractor.py
-```
 
-Report what was written.
+echo '{"session_id": "manual", "cwd": "CWD_PLACEHOLDER"}' | \
+  python3 ~/.claude/hooks/logseq_memory_extractor.py
+
+Replace CWD_PLACEHOLDER with the actual current working directory. Report what was written.
 ```
 
 Then type `/extract-memory` in any Claude Code session.
@@ -172,7 +198,7 @@ Then type `/extract-memory` in any Claude Code session.
 
 The script calls `claude -p` (the Claude Code CLI) which is already authenticated via your Claude Code Desktop app — no separate Anthropic API key is required.
 
-A clean environment is passed to the subprocess to prevent it from attempting IPC with the parent Desktop session:
+A minimal clean environment is passed to the subprocess to prevent IPC with the parent Desktop session:
 
 ```python
 env = {
