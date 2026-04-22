@@ -77,6 +77,36 @@ def find_transcript(transcript_path: str | None, project_dir: str, session_id: s
     return ""
 
 
+def extract_conversation_title(raw: str) -> str:
+    """Return the first user message content from the JSONL transcript,
+    truncated to 120 chars — this is what Claude Code shows as the session title."""
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        msg = entry.get("message", {})
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    content = block["text"]
+                    break
+            else:
+                continue
+        if isinstance(content, str) and content.strip():
+            text = content.strip().replace("\n", " ")
+            return text[:120] + ("…" if len(text) > 120 else "")
+    return ""
+
+
 def parse_transcript(raw: str) -> str:
     """Convert JSONL lines to readable text, keeping last MAX_TRANSCRIPT_CHARS chars."""
     lines = []
@@ -201,7 +231,8 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
         items = insights.get(key, [])
         if not isinstance(items, list):
             continue
-        subdir = LOGSEQ_PAGES_DIR / "claude" / key
+        date_folder = date.today().strftime("%Y_%m_%d")
+        subdir = LOGSEQ_PAGES_DIR / "claude" / key / date_folder
         subdir.mkdir(parents=True, exist_ok=True)
 
         # category prefix for filename ensures global uniqueness across subdirs
@@ -230,15 +261,19 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
 
 
 def write_session(insights: dict, project_name: str,
-                  session_id: str, session_slug: str, written_links: list[str]) -> None:
+                  session_id: str, session_slug: str, written_links: list[str],
+                  conversation_title: str = "") -> None:
     today = logseq_date()
-    sessions_dir = LOGSEQ_PAGES_DIR / "claude" / "sessions"
+    date_folder = date.today().strftime("%Y_%m_%d")
+    sessions_dir = LOGSEQ_PAGES_DIR / "claude" / "sessions" / date_folder
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     session_date = today.strip("[]").replace("/", "-")  # [[2026/04/21]] → 2026-04-21
     session_title = f"Session {session_date} {session_id} — {project_name}"
+    description = conversation_title or session_title
     lines = [
         f"title:: {session_title}",
+        f"description:: {description}",
         "type:: [[session]]",
         f"date:: {today}",
         f"project:: [[{project_name}]]",
@@ -332,6 +367,7 @@ def main() -> None:
     if not transcript_raw.strip():
         sys.exit(0)
 
+    conversation_title = extract_conversation_title(transcript_raw)
     transcript_text = parse_transcript(transcript_raw)
     if len(transcript_text) < 200:
         sys.exit(0)  # Session too short to be worth extracting
@@ -349,7 +385,7 @@ def main() -> None:
     session_title = f"Session {today} {session_short} — {project_name}"
 
     written_links = write_pages(insights, project_name, session_short, session_slug, session_title)
-    write_session(insights, project_name, session_short, session_slug, written_links)
+    write_session(insights, project_name, session_short, session_slug, written_links, conversation_title)
     update_index()
 
     print(

@@ -89,20 +89,29 @@ pages/
 └── claude/
     ├── index.md                          ← master index, query-driven
     ├── patterns/
-    │   └── pattern-<slug>.md
+    │   └── 2026_04_21/
+    │       └── pattern-<slug>.md
     ├── mistakes/
-    │   └── mistake-<slug>.md
+    │   └── 2026_04_21/
+    │       └── mistake-<slug>.md
     ├── decisions/
-    │   └── decision-<slug>.md
+    │   └── 2026_04_21/
+    │       └── decision-<slug>.md
     ├── context/
-    │   └── context-<slug>.md
+    │   └── 2026_04_21/
+    │       └── context-<slug>.md
     └── sessions/
-        └── 2026-04-21-<session-id>.md
+        └── 2026_04_21/
+            └── 2026-04-21-<session-id>.md
 ```
+
+Each session day gets its own subdirectory (`yyyy_mm_dd`). Logseq resolves all cross-links by `title::` rather than file path, so the directory layout has no effect on the graph.
 
 ## Logseq page format
 
 Every insight page uses Logseq's native property syntax starting on line 1:
+
+**Insight page:**
 
 ```
 title:: Pattern: Use Pathlib Over Os
@@ -122,9 +131,28 @@ tags:: [[python]] [[filesystem]]
     - Third step or key point
 ```
 
+**Session page:**
+
+```
+title:: Session 2026-04-21 abc12345 — my-project
+description:: First user message from the Claude Code session (shown as title in sidebar)
+type:: [[session]]
+date:: [[2026/04/21]]
+project:: [[my-project]]
+session:: [[Session 2026-04-21 abc12345 — my-project]]
+exclude-from-graph-view:: true
+
+- ## Summary
+  - 2-3 sentence overview of what was accomplished.
+
+- ## Insights
+  - [[Pattern: Use Pathlib Over Os]]
+```
+
 Properties:
 
 - **`title::`** — unique page identifier in Logseq; prefixed with category (`Pattern:`, `Decision:`, etc.) to guarantee global uniqueness across all subdirectories
+- **`description::`** — on session pages, holds the opening message from the Claude Code conversation (what the Claude Code sidebar shows as the session title); on insight pages, same as `title::`
 - **`type::`** — links to a category page (`[[pattern]]`, `[[mistake]]`, `[[decision]]`, `[[context]]`, `[[session]]`) — clickable in Logseq's graph
 - **`date::`** — links to the Logseq journal entry for that day (`[[yyyy/MM/dd]]` format)
 - **`project::`** — links to a project page, grouping all memory from the same codebase
