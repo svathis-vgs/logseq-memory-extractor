@@ -156,7 +156,7 @@ def logseq_date() -> str:
 # ── Logseq page writers ────────────────────────────────────────────────────────
 
 def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
-                  project: str, session_id: str, session_title: str) -> str:
+                  project: str, session_title: str) -> str:
     today = logseq_date()
     tag_str = " ".join(f"[[{t}]]" for t in tags) if tags else ""
     lines = [
@@ -164,7 +164,7 @@ def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
         f"type:: {type_}",
         f"date:: {today}",
         f"project:: [[{project}]]",
-        f"session-id:: {session_id}",
+        f"session:: [[{session_title}]]",
     ]
     if tag_str:
         lines.append(f"tags:: {tag_str}")
@@ -175,9 +175,6 @@ def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
         "",
         "- ## Detail",
         f"  - {detail}",
-        "",
-        "- ## Session",
-        f"  - [[{session_title}]]",
         "",
     ]
     return "\n".join(lines)
@@ -217,7 +214,6 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
                 detail=item.get("detail", ""),
                 tags=item.get("tags", []),
                 project=project_name,
-                session_id=session_id,
                 session_title=session_title,
             )
             (subdir / f"{filename}.md").write_text(content.lstrip("\n"))
@@ -233,12 +229,13 @@ def write_session(insights: dict, project_name: str,
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     session_date = today.strip("[]").replace("/", "-")  # [[2026/04/21]] → 2026-04-21
+    session_title = f"Session {session_date} {session_id} — {project_name}"
     lines = [
-        f"title:: Session {session_date} {session_id} — {project_name}",
+        f"title:: {session_title}",
         "type:: [[session]]",
         f"date:: {today}",
         f"project:: [[{project_name}]]",
-        f"session-id:: {session_id}",
+        f"session:: [[{session_title}]]",
         "exclude-from-graph-view:: true",
         "",
         "- ## Summary",
