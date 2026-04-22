@@ -38,6 +38,11 @@ Rules:
 - Slugs must be lowercase kebab-case, max 6 words, no special characters
 - If a category has nothing worth capturing, use an empty array []
 - Avoid filler — empty arrays beat low-quality entries
+- For the detail field: when describing steps, actions, or any list of items,
+  put each item on its own line using Logseq outline format. Start the first
+  line with the context/intro sentence, then each item as "\\n    - item text".
+  Example: "When X happens:\\n    - First do Y\\n    - Then check Z\\n    - Finally verify W"
+  For a single-paragraph explanation with no list, a plain string is fine.
 
 Transcript:
 """
@@ -168,15 +173,17 @@ def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
     ]
     if tag_str:
         lines.append(f"tags:: {tag_str}")
+    # Render detail: first line gets the bullet prefix; subsequent lines (sub-bullets) pass through
+    detail_lines = detail.split("\n")
+    detail_block = [f"  - {detail_lines[0]}"] + detail_lines[1:]
+
     lines += [
         "",
         "- ## Summary",
         f"  - {summary}",
         "",
         "- ## Detail",
-        f"  - {detail}",
-        "",
-    ]
+    ] + detail_block + [""]
     return "\n".join(lines)
 
 
