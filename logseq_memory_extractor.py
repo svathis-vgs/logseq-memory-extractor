@@ -151,34 +151,45 @@ def call_claude(transcript_text: str) -> dict:
     """
     prompt = EXTRACTION_PROMPT + transcript_text
 
-    # Pass a minimal clean env: PATH + HOME + OAuth token + recursion guard
-    env = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": os.environ.get("HOME", ""),
-        "LOGSEQ_EXTRACTOR_RUNNING": "1",
-    }
-    oauth = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-    if oauth:
-        env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth
+    # Inherit the full environment so auth (CLAUDE_CODE_OAUTH_TOKEN) is available,
+    # then set the recursion guard and strip socks5h proxy vars that the claude
+    # CLI doesn't support (they cause exit code 1).
+    env = dict(os.environ)
+    env["LOGSEQ_EXTRACTOR_RUNNING"] = "1"
+    for key in ("ALL_PROXY", "all_proxy", "FTP_PROXY", "ftp_proxy", "GRPC_PROXY", "grpc_proxy"):
+        env.pop(key, None)
 
     result = subprocess.run(
         [CLAUDE_BIN, "-p"],
         input=prompt,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,  # discard progress output to avoid pipe buffer deadlock
+        stderr=subprocess.PIPE,  # capture to surface errors; large output is stdout-only so no deadlock
         env=env,
         text=True,
-        timeout=120,
+        timeout=300,
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"claude CLI exited with code {result.returncode}")
+        detail = (result.stderr or "").strip()[:300]
+        raise RuntimeError(f"claude CLI exited with code {result.returncode}" + (f": {detail}" if detail else ""))
 
     raw = result.stdout.strip()
     # Strip markdown code fences if model wraps output in them
     raw = re.sub(r"^```(?:json)?\n?", "", raw)
     raw = re.sub(r"\n?```$", "", raw)
-    return json.loads(raw)
+    # Strip null bytes and BOM that trip up json.loads
+    raw = raw.replace("\x00", "").replace("﻿", "").strip()
+    if not raw:
+        detail = (result.stderr or "").strip()[:300]
+        raise RuntimeError("claude CLI returned empty output" + (f" — stderr: {detail}" if detail else ""))
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"claude CLI returned non-JSON (char {e.pos}): {raw[:120]!r}") from e
+    if not isinstance(parsed, dict):
+        # Model returned a list or other non-dict; treat as empty session
+        return {"patterns": [], "mistakes": [], "decisions": [], "context": [], "session_summary": ""}
+    return parsed
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -231,8 +242,7 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
         items = insights.get(key, [])
         if not isinstance(items, list):
             continue
-        date_folder = date.today().strftime("%Y_%m_%d")
-        subdir = LOGSEQ_PAGES_DIR / "claude" / key / date_folder
+        subdir = LOGSEQ_PAGES_DIR / "claude" / key
         subdir.mkdir(parents=True, exist_ok=True)
 
         # category prefix for filename ensures global uniqueness across subdirs
@@ -254,7 +264,9 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
                 project=project_name,
                 session_title=session_title,
             )
-            (subdir / f"{filename}.md").write_text(content.lstrip("\n"))
+            dest = subdir / f"{filename}.md"
+            if not dest.exists():
+                dest.write_text(content.lstrip("\n"))
             written.append(f"[[{title}]]")
 
     return written
@@ -287,6 +299,85 @@ def write_session(insights: dict, project_name: str,
     ] + [f"  - {link}" for link in written_links] + [""]
 
     (sessions_dir / f"{session_slug}.md").write_text("\n".join(lines).lstrip("\n"))
+
+
+def write_digest() -> None:
+    """Regenerate a plain-text digest of all insights so Claude can read it at session start."""
+    today = date.today().isoformat()
+    categories = ["patterns", "mistakes", "decisions", "context"]
+
+    all_insights: list[tuple[str, str, str, str]] = []
+
+    for cat in categories:
+        subdir = LOGSEQ_PAGES_DIR / "claude" / cat
+        if not subdir.exists():
+            continue
+        for f in subdir.glob("*.md"):
+            try:
+                text = f.read_text(errors="replace")
+            except OSError:
+                continue
+            lines = text.splitlines()
+            meta: dict[str, str] = {}
+            for line in lines:
+                if "::" in line and not line.startswith("-"):
+                    k, _, v = line.partition("::")
+                    meta[k.strip()] = v.strip()
+
+            summary = ""
+            in_summary = False
+            for line in lines:
+                stripped = line.strip()
+                if stripped == "- ## Summary":
+                    in_summary = True
+                    continue
+                if in_summary:
+                    if stripped.startswith("- ##"):
+                        break
+                    if stripped.startswith("- "):
+                        summary = stripped[2:].strip()
+                        break
+
+            date_str = meta.get("date", "").strip("[[]]").replace("/", "-")
+            title = meta.get("title", f.stem)
+            all_insights.append((date_str, cat, title, summary))
+
+    all_insights.sort(key=lambda x: x[0], reverse=True)
+
+    by_cat: dict[str, list[tuple[str, str, str]]] = {c: [] for c in categories}
+    for date_str, cat, title, summary in all_insights:
+        by_cat[cat].append((date_str, title, summary))
+
+    totals = {c: len(by_cat[c]) for c in categories}
+
+    out = [
+        "# Claude Code Memory Digest",
+        f"_Updated: {today} — "
+        f"{totals['patterns']} patterns, {totals['mistakes']} mistakes, "
+        f"{totals['decisions']} decisions, {totals['context']} context_",
+        "",
+        "Read this at session start to recall accumulated insights.",
+        "",
+    ]
+
+    MAX_PER_CAT = 15
+    prefixes = ("Pattern: ", "Mistake: ", "Decision: ", "Context: ")
+    for cat in categories:
+        items = by_cat[cat][:MAX_PER_CAT]
+        if not items:
+            continue
+        out.append(f"## {cat.title()}")
+        for date_str, title, summary in items:
+            short = title
+            for p in prefixes:
+                if title.startswith(p):
+                    short = title[len(p):]
+                    break
+            out.append(f"- **{short}** ({date_str}) — {summary}")
+        out.append("")
+
+    digest_path = LOGSEQ_PAGES_DIR / "claude" / "digest.md"
+    digest_path.write_text("\n".join(out))
 
 
 def update_index() -> None:
@@ -387,6 +478,7 @@ def main() -> None:
     written_links = write_pages(insights, project_name, session_short, session_slug, session_title)
     write_session(insights, project_name, session_short, session_slug, written_links, conversation_title)
     update_index()
+    write_digest()
 
     print(
         f"[logseq-memory] {len(written_links)} insight(s) → {LOGSEQ_PAGES_DIR}/claude/",
