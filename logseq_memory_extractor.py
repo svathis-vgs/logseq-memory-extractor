@@ -272,6 +272,18 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
     return written
 
 
+_DAYFLOW_KEYWORDS = (
+    "screenshot", "screen recording", "activity log",
+    "timeline cards", "dayflow", "screen capture",
+)
+
+
+def _is_dayflow_session(conversation_title: str, session_summary: str) -> bool:
+    """Return True if this session looks like a Dayflow screen-recording analysis."""
+    haystack = (conversation_title + " " + session_summary).lower()
+    return any(kw in haystack for kw in _DAYFLOW_KEYWORDS)
+
+
 def write_session(insights: dict, project_name: str,
                   session_id: str, session_slug: str, written_links: list[str],
                   conversation_title: str = "") -> None:
@@ -283,6 +295,8 @@ def write_session(insights: dict, project_name: str,
     session_date = today.strip("[]").replace("/", "-")  # [[2026/04/21]] → 2026-04-21
     session_title = f"Session {session_date} {session_id} — {project_name}"
     description = conversation_title or session_title
+    session_summary = insights.get("session_summary", "No summary generated.")
+
     lines = [
         f"title:: {session_title}",
         f"description:: {description}",
@@ -291,9 +305,13 @@ def write_session(insights: dict, project_name: str,
         f"project:: [[{project_name}]]",
         f"session:: [[{session_title}]]",
         "exclude-from-graph-view:: true",
+    ]
+    if _is_dayflow_session(conversation_title, session_summary):
+        lines.append("tags:: [[dayflow]]")
+    lines += [
         "",
         "- ## Summary",
-        f"  - {insights.get('session_summary', 'No summary generated.')}",
+        f"  - {session_summary}",
         "",
         "- ## Insights",
     ] + [f"  - {link}" for link in written_links] + [""]
