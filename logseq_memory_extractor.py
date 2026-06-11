@@ -36,7 +36,8 @@ Return ONLY valid JSON with this exact structure — no prose, no markdown fence
 }
 
 Rules:
-- Only include items that are genuinely reusable or important across sessions
+- Only include items that are NON-OBVIOUS and would not be known to an experienced engineer without this session. Skip anything that is standard engineering knowledge, easily Google-able, or a generic best practice.
+- Maximum 5 items per category. Be ruthless — if you have more candidates, keep only the most surprising or project-specific ones.
 - Slugs must be lowercase kebab-case, max 6 words, no special characters
 - If a category has nothing worth capturing, use an empty array []
 - Avoid filler — empty arrays beat low-quality entries
@@ -293,17 +294,26 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
             slug = re.sub(r"[^a-z0-9-]+", "-", item.get("slug", "untitled").lower()).strip("-")
             filename = f"{category}-{slug}"
             title = f"{category.title()}: {slug.replace('-', ' ').title()}"
-            content = _page_content(
-                type_=type_name,
-                title=title,
-                summary=item.get("summary", ""),
-                detail=item.get("detail", ""),
-                tags=item.get("tags", []),
-                project=project_name,
-                session_title=session_title,
-            )
+
+            # Skip if exact file exists OR if a file with the same 2-word slug prefix exists.
+            # The 2-word prefix check catches re-extractions of the same concept with a
+            # slightly different slug (e.g. "kafka-rebalance-storm" vs "kafka-rebalance-recovery").
+            slug_words = slug.split("-")
+            prefix_2 = "-".join(slug_words[:2]) if len(slug_words) >= 2 else slug
+            prefix_pattern = f"{category}-{prefix_2}-"
+            already_exists = any(True for _ in subdir.glob(f"{prefix_pattern}*.md"))
+
             dest = subdir / f"{filename}.md"
-            if not dest.exists():
+            if not dest.exists() and not already_exists:
+                content = _page_content(
+                    type_=type_name,
+                    title=title,
+                    summary=item.get("summary", ""),
+                    detail=item.get("detail", ""),
+                    tags=item.get("tags", []),
+                    project=project_name,
+                    session_title=session_title,
+                )
                 dest.write_text(content.lstrip("\n"))
             written.append(f"[[{title}]]")
 
