@@ -22,6 +22,8 @@ CLAUDE_BIN = shutil.which("claude") or "/Users/spiros/.local/bin/claude"
 MAX_TRANSCRIPT_CHARS = 12_000  # ~3k tokens — keeps prompts fast via the claude CLI
 
 EXTRACTION_PROMPT = """\
+Your output MUST be a single raw JSON object. Do NOT include any prose, explanation, preamble, summary text, markdown, or code fences. Your response MUST start with `{` and end with `}`. Nothing before the opening brace. Nothing after the closing brace. If you add any text outside the JSON object the output is unusable.
+
 Analyze this Claude Code session transcript and extract reusable insights.
 Return ONLY valid JSON with this exact structure — no prose, no markdown fences:
 
@@ -159,8 +161,21 @@ def call_claude(transcript_text: str) -> dict:
     for key in ("ALL_PROXY", "all_proxy", "FTP_PROXY", "ftp_proxy", "GRPC_PROXY", "grpc_proxy"):
         env.pop(key, None)
 
+    # JSON Schema enforces structured output at the API level — model cannot return prose.
+    schema = json.dumps({
+        "type": "object",
+        "properties": {
+            "patterns":  {"type": "array", "items": {"type": "object", "properties": {"slug": {"type": "string"}, "summary": {"type": "string"}, "detail": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["slug", "summary", "detail", "tags"]}},
+            "mistakes":  {"type": "array", "items": {"type": "object", "properties": {"slug": {"type": "string"}, "summary": {"type": "string"}, "detail": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["slug", "summary", "detail", "tags"]}},
+            "decisions": {"type": "array", "items": {"type": "object", "properties": {"slug": {"type": "string"}, "summary": {"type": "string"}, "detail": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["slug", "summary", "detail", "tags"]}},
+            "context":   {"type": "array", "items": {"type": "object", "properties": {"slug": {"type": "string"}, "summary": {"type": "string"}, "detail": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["slug", "summary", "detail", "tags"]}},
+            "session_summary": {"type": "string"},
+        },
+        "required": ["patterns", "mistakes", "decisions", "context", "session_summary"],
+    })
+
     result = subprocess.run(
-        [CLAUDE_BIN, "-p"],
+        [CLAUDE_BIN, "-p", "--no-session-persistence", "--output-format", "json", "--json-schema", schema],
         input=prompt,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,  # capture to surface errors; large output is stdout-only so no deadlock
@@ -174,14 +189,37 @@ def call_claude(transcript_text: str) -> dict:
         raise RuntimeError(f"claude CLI exited with code {result.returncode}" + (f": {detail}" if detail else ""))
 
     raw = result.stdout.strip()
-    # Strip markdown code fences if model wraps output in them
-    raw = re.sub(r"^```(?:json)?\n?", "", raw)
-    raw = re.sub(r"\n?```$", "", raw)
     # Strip null bytes and BOM that trip up json.loads
     raw = raw.replace("\x00", "").replace("﻿", "").strip()
     if not raw:
         detail = (result.stderr or "").strip()[:300]
         raise RuntimeError("claude CLI returned empty output" + (f" — stderr: {detail}" if detail else ""))
+
+    # --output-format json wraps the model reply.
+    # With --json-schema, structured output is in outer["structured_output"] (already a dict).
+    # Without --json-schema, the text reply is in outer["result"] (a string to parse).
+    try:
+        outer = json.loads(raw)
+        if isinstance(outer, dict):
+            if "structured_output" in outer and isinstance(outer["structured_output"], dict):
+                return outer["structured_output"]  # already parsed — return directly
+            elif "result" in outer:
+                raw = outer["result"]
+    except json.JSONDecodeError:
+        pass  # not an outer wrapper — fall through to direct parse
+
+    # Strip markdown code fences if model wrapped output in them
+    raw = re.sub(r"^```(?:json)?\n?", "", raw.strip())
+    raw = re.sub(r"\n?```$", "", raw).strip()
+
+    # Model sometimes wraps JSON in prose ("Here's what I extracted: {...}").
+    # Extract the outermost {...} block to handle that gracefully.
+    if not raw.startswith("{"):
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            raw = raw[start:end + 1]
+
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as e:
