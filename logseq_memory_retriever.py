@@ -99,11 +99,18 @@ def main() -> None:
     if not results:
         sys.exit(0)
 
-    lines = ["## Relevant vault memories (semantic search)\n"]
+    def extract_title(content: str, fallback: str) -> str:
+        for line in content.splitlines():
+            if line.startswith("title::"):
+                return line.split("::", 1)[1].strip()
+        return fallback
+
+    lines = [f"🔍 *Vault index consulted — {len(results)} match(es) above {int(MIN_SCORE * 100)}% threshold*\n",
+             "## Relevant vault memories (semantic search)\n"]
     for r in results:
-        name = r["path"].stem
+        title = extract_title(r["content"], r["path"].stem)
         pct = int(r["score"] * 100)
-        lines.append(f"### {name} ({pct}% match)\n")
+        lines.append(f"### {title} ({pct}% match)\n")
         lines.append(r["content"])
         lines.append("")
 
