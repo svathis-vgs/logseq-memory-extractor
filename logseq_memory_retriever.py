@@ -114,7 +114,7 @@ def main() -> None:
     for r in results:
         title = extract_title(r["content"], r["path"].stem)
         pct = int(r["score"] * 100)
-        lines.append(f"### {title} ({pct}% match)\n")
+        lines.append(f"### {title} ({pct}% match) <!-- path:{r['path']} -->\n")
         lines.append(r["content"])
         lines.append("")
 
