@@ -72,6 +72,10 @@ def main() -> None:
     if os.environ.get("LOGSEQ_EXTRACTOR_RUNNING"):
         sys.exit(0)
 
+    # Honour manual disable flag (set via /vault-off skill)
+    if Path("~/.claude/vault_retriever_disabled").expanduser().exists():
+        sys.exit(0)
+
     # Parse hook payload — Claude Code writes JSON on stdin for UserPromptSubmit
     raw = sys.stdin.read()
     query = ""
