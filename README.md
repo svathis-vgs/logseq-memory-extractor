@@ -1,55 +1,68 @@
 # logseq-memory-extractor
 
-A Claude Code **Stop hook** that automatically extracts reusable insights from every session and writes them as structured pages into your Logseq vault — giving Claude persistent memory across conversations.
+A Claude Code hook framework that gives Claude persistent, semantic memory across sessions via a Logseq vault. Three scripts work together:
+
+| Script | Hook | Role |
+|--------|------|------|
+| `logseq_memory_extractor.py` | Stop | Extracts insights from the session transcript and writes them as Logseq pages |
+| `logseq_memory_index.py` | (one-time CLI) | Builds the semantic search index over all vault files |
+| `logseq_memory_retriever.py` | UserPromptSubmit | Retrieves the most relevant vault pages for each new prompt |
 
 ## How it works
 
 ```
 Session ends
   → Stop hook fires logseq_memory_extractor.py
-  → Script reads the session transcript (JSONL)
-  → Calls the claude CLI to extract structured insights
-  → Writes one Logseq page per insight under pages/claude/
-  → Updates the updated:: date on the master index
-  → Regenerates digest.md — a plain-text summary of all insights
-  → CLAUDE.md injects digest.md into the next session
+    → Reads session transcript (JSONL)
+    → Calls claude -p to extract structured insights
+    → Writes one Logseq page per insight under pages/claude/
+    → Updates the vault index incrementally (if built)
+    → Regenerates digest.md — plain-text summary for Claude to read at session start
+
+User types a new message
+  → UserPromptSubmit hook fires logseq_memory_retriever.py
+    → Embeds the prompt with all-MiniLM-L6-v2
+    → Cosine-similarity search over vault_index.npz
+    → Top-8 matching vault pages injected as a system reminder
+    → Claude reads them before responding
 ```
-
-Every time a Claude Code session ends, the script:
-
-1. Reads the session transcript from `~/.claude/projects/`
-2. Sends the last ~3 000 tokens to `claude -p` for analysis
-3. Writes one Logseq page per insight, organised by category (skip-if-exists — reruns are safe)
-4. Bumps the `updated::` date on `claude/index.md` — all sessions and insights are discovered automatically via Logseq queries, nothing is appended manually
-5. Regenerates `claude/digest.md` — a plain-text list of the 15 most recent insights per category, readable by Claude at the start of the next session
-
-At the start of the next session, Claude reads `~/.claude/CLAUDE.md` which points to `digest.md`, closing the memory loop.
 
 ## Prerequisites
 
-- [Claude Code Desktop](https://claude.ai/download) — authentication is reused from the Desktop app, no separate API key needed
+- [Claude Code Desktop](https://claude.ai/download) — authentication is reused from the Desktop app
 - [Logseq](https://logseq.com) with an existing graph (or create a new one)
 - Python 3.10+
+- For semantic search: `pip install sentence-transformers numpy`
 
 ## Installation
 
-### 1. Copy the script
+### 1. Copy the scripts
 
 ```sh
 mkdir -p ~/.claude/hooks
 curl -o ~/.claude/hooks/logseq_memory_extractor.py \
   https://raw.githubusercontent.com/svathis-vgs/logseq-memory-extractor/main/logseq_memory_extractor.py
+curl -o ~/.claude/hooks/logseq_memory_index.py \
+  https://raw.githubusercontent.com/svathis-vgs/logseq-memory-extractor/main/logseq_memory_index.py
+curl -o ~/.claude/hooks/logseq_memory_retriever.py \
+  https://raw.githubusercontent.com/svathis-vgs/logseq-memory-extractor/main/logseq_memory_retriever.py
 ```
 
 ### 2. Configure the vault path
 
-Edit the script and set `LOGSEQ_PAGES_DIR` to your vault's `pages/` directory:
+Edit `logseq_memory_extractor.py` and set `LOGSEQ_PAGES_DIR` to your vault's `pages/` directory:
 
 ```python
 LOGSEQ_PAGES_DIR = Path("~/path/to/your/vault/pages").expanduser()
 ```
 
-### 3. Register the Stop hook
+Set the same path in `logseq_memory_index.py`:
+
+```python
+LOGSEQ_PAGES_DIR = Path("~/path/to/your/vault/pages").expanduser()
+```
+
+### 3. Register the hooks
 
 Add to `~/.claude/settings.json`:
 
@@ -59,10 +72,17 @@ Add to `~/.claude/settings.json`:
     "Stop": [
       {
         "matcher": "",
+        "hooks": [{"type": "command", "command": "python3 /Users/YOU/.claude/hooks/logseq_memory_extractor.py"}]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/YOU/.claude/hooks/logseq_memory_extractor.py"
+            "command": "python3 /Users/YOU/.claude/hooks/logseq_memory_retriever.py",
+            "timeout": 10
           }
         ]
       }
@@ -71,9 +91,11 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
+Replace `/Users/YOU` with your home directory path.
+
 ### 4. Add memory injection to CLAUDE.md
 
-Create `~/.claude/CLAUDE.md`:
+Create or edit `~/.claude/CLAUDE.md`:
 
 ```markdown
 ## Persistent Memory
@@ -83,18 +105,44 @@ for accumulated patterns, mistakes, decisions, and context from previous session
 This file is plain text regenerated by the Stop hook — it is always current.
 ```
 
-> **Why `digest.md` and not `index.md`?**  
-> `index.md` uses Logseq `{{query ...}}` blocks that only resolve inside the Logseq app — Claude reads the raw file and sees the query syntax, not the data. `digest.md` is regenerated as plain text after every session, so Claude can actually read and apply the insights.
+### 5. Build the semantic index (one-time)
+
+```sh
+pip install sentence-transformers numpy
+python3 ~/.claude/hooks/logseq_memory_index.py
+```
+
+This embeds all vault files and saves `~/.claude/vault_index.npz`. Rebuilding takes
+roughly 1 minute per 8,000 files. Future sessions append new files automatically.
+
+## Retrieval behaviour
+
+The `UserPromptSubmit` hook fires before every user message. It:
+
+1. Embeds the prompt using `all-MiniLM-L6-v2` (384 dimensions, offline, ~22 MB)
+2. Computes cosine similarity against the pre-built index
+3. Returns up to 8 results above a 0.25 similarity floor
+4. Injects their contents as a `system-reminder` Claude reads before responding
+
+**Latency:** ~600–900 ms per message (model load from disk cache: ~500 ms; encode + search: <50 ms). The model is never downloaded at query time — only at index build time.
+
+**Fallback:** If the index hasn't been built or `sentence-transformers` is not installed, the hook exits silently without affecting the session.
+
+## Accumulation controls
+
+Two settings in `logseq_memory_extractor.py` keep the vault from growing unbounded:
+
+**Extraction prompt** — instructs the extractor to only capture non-obvious, project-specific insights (max 5 per category per session). Empirically cuts the daily accumulation rate from ~330 to ~140 files/day.
+
+**Slug near-match dedup** — before writing a new file, checks whether a file with the same 2-word slug prefix already exists in the category subdirectory. Prevents same-concept files with different trailing words from accumulating (e.g. `kafka-rebalance-storm` blocks `kafka-rebalance-recovery`).
 
 ## Vault structure
-
-The script writes into a `claude/` namespace inside your existing Logseq vault:
 
 ```
 pages/
 └── claude/
-    ├── index.md                          ← master index (Logseq query-driven)
-    ├── digest.md                         ← plain-text summary for Claude to read
+    ├── index.md          ← Logseq query-driven master index (never appended manually)
+    ├── digest.md         ← Plain-text summary for Claude to read (regenerated each session)
     ├── patterns/
     │   └── pattern-<slug>.md
     ├── mistakes/
@@ -104,17 +152,13 @@ pages/
     ├── context/
     │   └── context-<slug>.md
     └── sessions/
-        └── 2026_04_21/
-            └── 2026-04-21-<session-id>.md
+        └── <yyyy_mm_dd>/
+            └── <date>-<session-id>.md
 ```
 
-Insight pages are written directly into their category directory (no per-day subdirectories). Session pages keep a `yyyy_mm_dd/` subfolder for navigability. Logseq resolves all cross-links by `title::` rather than file path, so the directory layout has no effect on the graph.
+## Insight page format
 
-## Logseq page format
-
-Every insight page uses Logseq's native property syntax starting on line 1:
-
-**Insight page:**
+Every insight page uses Logseq's native property syntax:
 
 ```
 title:: Pattern: Use Pathlib Over Os
@@ -131,89 +175,28 @@ tags:: [[python]] [[filesystem]]
   - Context sentence describing when this applies:
     - First step or key point
     - Second step or key point
-    - Third step or key point
-```
-
-**Session page:**
-
-```
-title:: Session 2026-04-21 abc12345 — my-project
-description:: First user message from the Claude Code session (shown as title in sidebar)
-type:: [[session]]
-date:: [[2026/04/21]]
-project:: [[my-project]]
-session:: [[Session 2026-04-21 abc12345 — my-project]]
-exclude-from-graph-view:: true
-
-- ## Summary
-  - 2-3 sentence overview of what was accomplished.
-
-- ## Insights
-  - [[Pattern: Use Pathlib Over Os]]
-```
-
-Properties:
-
-- **`title::`** — unique page identifier in Logseq; prefixed with category (`Pattern:`, `Decision:`, etc.) to guarantee global uniqueness across all subdirectories
-- **`description::`** — on session pages, holds the opening message from the Claude Code conversation (what the Claude Code sidebar shows as the session title); on insight pages, same as `title::`
-- **`type::`** — links to a category page (`[[pattern]]`, `[[mistake]]`, `[[decision]]`, `[[context]]`, `[[session]]`) — clickable in Logseq's graph
-- **`date::`** — links to the Logseq journal entry for that day (`[[yyyy/MM/dd]]` format)
-- **`project::`** — links to a project page, grouping all memory from the same codebase
-- **`session::`** — links to the session page that produced this insight; creates a graph edge so the session's backlinks panel lists all insights it generated
-
-Session pages additionally carry `exclude-from-graph-view:: true` to keep the graph focused on long-lived insights rather than transient session nodes.
-
-### Detail field formatting
-
-When a detail contains steps, actions, or a list of items, the script writes them as Logseq outline sub-bullets:
-
-```
-- ## Detail
-  - When consumer lag spikes suddenly:
-    - Classify spike shape — vertical jump means consumption stopped
-    - Check consumer pods for restarts, OOMKills, or rebalances
-    - Grep consumer logs ±5 min for errors or stuck handlers
-```
-
-Single-paragraph explanations remain as a flat bullet.
-
-### Index page
-
-`claude/index.md` uses Logseq queries to auto-discover all pages by type — nothing is appended to it on each run:
-
-```
-- ## Sessions
-  - {{query (property type [[session]])}}
-    query-table:: true
-    query-sort-by:: date
-    query-sort-desc:: true
-    query-properties:: [:title :date :project]
-
-- ## Patterns
-  - {{query (property type [[pattern]])}}
-    ...
 ```
 
 ## Insight categories
 
 | Category | What gets captured |
-|----------|-------------------|
+|----------|--------------------|
 | `pattern` | Reusable code approaches and techniques |
 | `mistake` | Errors made and how they were corrected |
 | `decision` | Architectural choices with reasoning |
 | `context` | Project-specific terms, constraints, or facts |
 | `session` | Per-session summary with links to all insights |
 
-Only genuinely reusable items are written — the extraction prompt prefers empty arrays over low-quality filler.
+Only genuinely non-obvious items are written — the extraction prompt prefers empty arrays over low-quality filler.
 
-## Manual trigger
+## Manual operations
 
-Run extraction mid-session without closing the app using the `/extract-memory` custom slash command.
+**Trigger extraction mid-session** using the `/extract-memory` custom slash command.
 
 Create `~/.claude/commands/extract-memory.md`:
 
 ```markdown
-Run the Logseq memory extractor to capture insights from this session into the Logseq graph.
+Run the Logseq memory extractor to capture insights from this session.
 
 Execute this command:
 
@@ -223,32 +206,54 @@ echo '{"session_id": "manual", "cwd": "CWD_PLACEHOLDER"}' | \
 Replace CWD_PLACEHOLDER with the actual current working directory. Report what was written.
 ```
 
-Then type `/extract-memory` in any Claude Code session.
+**Rebuild the full index** (after vault consolidation or model change):
+
+```sh
+python3 ~/.claude/hooks/logseq_memory_index.py
+```
+
+**Rebuild quietly** (no progress bar, for cron jobs):
+
+```sh
+python3 ~/.claude/hooks/logseq_memory_index.py --quiet
+```
 
 ## Authentication
 
-The script calls `claude -p` (the Claude Code CLI) which is already authenticated via your Claude Code Desktop app — no separate Anthropic API key is required.
+The extractor calls `claude -p` (the Claude Code CLI) which reuses authentication
+from your Claude Code Desktop app — no separate API key needed.
 
-The subprocess inherits the full parent environment so `CLAUDE_CODE_OAUTH_TOKEN` and any other auth vars are available. Proxy variables that the `claude` CLI doesn't support (`ALL_PROXY`, `all_proxy`, `FTP_PROXY`, `ftp_proxy`, `GRPC_PROXY`, `grpc_proxy`) are stripped to prevent exit code 1 errors on machines that have a socks5h proxy configured:
-
-```python
-env = dict(os.environ)
-env["LOGSEQ_EXTRACTOR_RUNNING"] = "1"   # recursion guard
-for key in ("ALL_PROXY", "all_proxy", ...):
-    env.pop(key, None)
-```
+The retriever uses `sentence-transformers` entirely locally — no network calls at
+query time. The model is downloaded once on first use (~22 MB from HuggingFace)
+and cached in `~/.cache/torch/sentence_transformers/`.
 
 ### Recursion guard
 
-The Stop hook fires when **any** `claude` process exits — including the `claude -p` subprocess the script spawns. Without a guard, this creates infinite recursion. The script detects `LOGSEQ_EXTRACTOR_RUNNING=1` in its environment and exits immediately, breaking the chain.
+The Stop hook fires when **any** `claude` process exits — including the `claude -p`
+subprocess the extractor spawns. Without a guard, this creates infinite recursion.
+The extractor sets `LOGSEQ_EXTRACTOR_RUNNING=1` in the subprocess environment, and
+both the extractor and retriever exit immediately when this variable is detected.
 
 ## Configuration reference
+
+### logseq_memory_extractor.py
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LOGSEQ_PAGES_DIR` | *(must set)* | Absolute path to your vault's `pages/` directory |
 | `CLAUDE_BIN` | auto-detected | Path to the `claude` CLI binary |
 | `MAX_TRANSCRIPT_CHARS` | `12000` | Transcript truncation limit (~3k tokens) |
+
+### logseq_memory_index.py / logseq_memory_retriever.py
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOGSEQ_PAGES_DIR` | *(must set)* | Same vault path as the extractor |
+| `INDEX_PATH` | `~/.claude/vault_index.npz` | Where the compressed index is stored |
+| `MODEL_NAME` | `all-MiniLM-L6-v2` | sentence-transformers model (384-dim, ~22 MB) |
+| `TOP_K` | `8` | Max results returned per prompt |
+| `MIN_SCORE` | `0.25` | Cosine similarity floor — results below this are dropped |
+| `MAX_FILE_CHARS` | `600` | Characters per result injected into context |
 
 ## License
 
