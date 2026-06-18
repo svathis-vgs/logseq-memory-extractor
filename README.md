@@ -198,12 +198,23 @@ Create `~/.claude/commands/extract-memory.md`:
 ```markdown
 Run the Logseq memory extractor to capture insights from this session.
 
-Execute this command:
+Execute this command (the session ID is auto-detected from the `CLAUDE_CODE_SESSION_ID` env var
+that Claude Code injects; falls back to `"manual"` if for some reason it isn't set):
 
-echo '{"session_id": "manual", "cwd": "CWD_PLACEHOLDER"}' | \
-  python3 ~/.claude/hooks/logseq_memory_extractor.py
+```sh
+SID="${CLAUDE_CODE_SESSION_ID:-manual}"
+echo "{\"session_id\": \"$SID\", \"cwd\": \"$PWD\"}" \
+  | python3 ~/.claude/hooks/logseq_memory_extractor.py
+```
 
-Replace CWD_PLACEHOLDER with the actual current working directory. Report what was written.
+Notes:
+- `$PWD` and `$CLAUDE_CODE_SESSION_ID` are shell variables — leave them as-is; they expand at runtime.
+- The session ID matters because the extractor uses it to find the transcript JSONL under
+  `~/.claude/projects/`. If you pass the literal string `"manual"` (no env var set), it falls back
+  to picking the newest JSONL by mtime, which may not be the current session.
+
+After the command completes, report what was written (count of insights + list of files
+modified in the last few minutes).
 ```
 
 **Rebuild the full index** (after vault consolidation or model change):
