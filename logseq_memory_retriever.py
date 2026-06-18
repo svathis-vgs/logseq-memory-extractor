@@ -23,8 +23,8 @@ from pathlib import Path
 
 INDEX_PATH = Path("~/.claude/vault_index.npz").expanduser()
 MODEL_NAME = "all-MiniLM-L6-v2"
-TOP_K = 8
-MIN_SCORE = 0.25   # cosine similarity floor — results below this are noise
+TOP_K = 5
+MIN_SCORE = 0.38   # cosine similarity floor — results below this are noise
 MAX_FILE_CHARS = 600  # chars per result (keeps total injection under ~8k chars)
 
 
