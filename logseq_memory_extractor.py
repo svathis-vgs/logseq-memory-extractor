@@ -267,9 +267,81 @@ def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
     return "\n".join(lines)
 
 
+def _index_extract_text(path: Path) -> str:
+    """Extract title + summary from a Logseq page for embedding (mirrors logseq_memory_index.py)."""
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return ""
+    title = ""
+    summary_parts: list[str] = []
+    in_summary = False
+    for line in lines:
+        if line.startswith("title::"):
+            title = line[7:].strip()
+        elif "## Summary" in line:
+            in_summary = True
+        elif in_summary:
+            stripped = line.strip()
+            if stripped.startswith("- ##"):
+                break
+            if stripped.startswith("- "):
+                summary_parts.append(stripped[2:].strip())
+                if len(summary_parts) >= 3:
+                    break
+    return f"{title}. {' '.join(summary_parts)}".strip(". ")[:500]
+
+
+def _update_vault_index(new_paths: list[Path]) -> None:
+    """Incrementally append newly written insight pages to the semantic index.
+    No-op if the index hasn't been built yet or if sentence-transformers is absent."""
+    if not new_paths:
+        return
+    index_path = Path("~/.claude/vault_index.npz").expanduser()
+    if not index_path.exists():
+        return  # User must run logseq_memory_index.py first
+    try:
+        import numpy as np
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        return
+
+    texts: list[str] = []
+    valid_paths: list[str] = []
+    for p in new_paths:
+        if not p.exists():
+            continue
+        text = _index_extract_text(p)
+        if text and len(text) > 10:
+            texts.append(text)
+            valid_paths.append(str(p))
+    if not texts:
+        return
+
+    try:
+        data = np.load(index_path, allow_pickle=True)
+        old_embeddings = data["embeddings"]
+        old_paths = list(data["paths"])
+
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+        new_embeddings = model.encode(
+            texts, normalize_embeddings=True, show_progress_bar=False
+        ).astype("float32")
+
+        combined = np.vstack([old_embeddings, new_embeddings])
+        np.savez_compressed(
+            index_path,
+            embeddings=combined,
+            paths=np.array(old_paths + valid_paths),
+        )
+    except Exception as e:
+        print(f"[logseq-memory] index update skipped: {e}", file=sys.stderr)
+
+
 def write_pages(insights: dict, project_name: str, session_id: str, session_slug: str, session_title: str) -> list[str]:
     """Write one page per insight. Returns list of [[namespace/links]]."""
     written: list[str] = []
+    new_paths: list[Path] = []
     type_map = {
         "patterns": "[[pattern]]",
         "mistakes": "[[mistake]]",
@@ -315,8 +387,10 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
                     session_title=session_title,
                 )
                 dest.write_text(content.lstrip("\n"))
+                new_paths.append(dest)
             written.append(f"[[{title}]]")
 
+    _update_vault_index(new_paths)
     return written
 
 
