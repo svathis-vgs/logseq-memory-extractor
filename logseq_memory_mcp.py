@@ -125,6 +125,24 @@ def _make_slug(title: str) -> str:
     return re.sub(r"-+", "-", slug)[:60]
 
 
+def _format_detail(detail: str) -> str:
+    """Convert detail text to Logseq outline block format.
+
+    First line → '  - {line}' (depth-1 block under ## Detail)
+    Subsequent lines → '    - {line}' (depth-2 child block)
+    Leading '- ' stripped from each line before adding the block prefix.
+    """
+    lines = [l.strip() for l in detail.strip().splitlines() if l.strip()]
+    if not lines:
+        return "  - (no detail)"
+    result = []
+    for i, line in enumerate(lines):
+        text = line[2:].strip() if line.startswith("- ") else line
+        prefix = "  - " if i == 0 else "    - "
+        result.append(f"{prefix}{text}")
+    return "\n".join(result)
+
+
 def _write_insight(
     insight_type: str,
     title: str,
@@ -165,10 +183,10 @@ def _write_insight(
         f"tags:: {tags_str}\n"
         f"\n"
         f"- ## Summary\n"
-        f"  - {summary}\n"
+        f"  - {summary.strip()}\n"
         f"\n"
         f"- ## Detail\n"
-        f"  - {detail}\n"
+        f"{_format_detail(detail)}\n"
     )
     filepath.write_text(content, encoding="utf-8")
     return f"Written: {filepath}"
@@ -284,7 +302,11 @@ async def serve() -> None:
                         },
                         "detail": {
                             "type": "string",
-                            "description": "Full explanation: when it applies, why it matters, how to use it",
+                            "description": (
+                                "Full explanation. First line is the intro sentence; "
+                                "each subsequent line becomes a child bullet in Logseq outline format. "
+                                "Example: 'Context sentence.\\n- Step one\\n- Step two'"
+                            ),
                         },
                         "tags": {
                             "type": "array",
