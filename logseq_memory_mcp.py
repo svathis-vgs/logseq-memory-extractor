@@ -198,6 +198,24 @@ def _sanitize(text: str) -> str:
     return text
 
 
+def _strip_backtick_spans(line: str) -> str:
+    """Remove backtick-wrapped spans so lint doesn't flag escaped content."""
+    return re.sub(r'`[^`]+`', '', line)
+
+
+def _check_line(line: str, lineno: int, is_property_zone: bool) -> list[str]:
+    """Check a single line for Logseq format violations."""
+    issues = []
+    stripped = _strip_backtick_spans(line)
+    if re.search(r'#\d', stripped) and not line.startswith("tags::"):
+        issues.append(f"line {lineno}: bare #digit (creates phantom tag page)")
+    if "{{" in stripped and not line.strip().startswith("```"):
+        issues.append(f"line {lineno}: unescaped {{{{ macro")
+    if is_property_zone and re.match(r'^(title|type|date|tags|project|session|last-updated|status):(?!:)', line):
+        issues.append(f"line {lineno}: single-colon property (should be ::)")
+    return issues
+
+
 def _verify_page(filepath: Path) -> list[str]:
     """Post-write verification — check a single file for format violations."""
     issues = []
@@ -209,12 +227,7 @@ def _verify_page(filepath: Path) -> list[str]:
         issues.append("odd backtick count (unclosed inline code)")
 
     for i, line in enumerate(lines, 1):
-        if re.search(r'(?<!\`)#\d', line) and not line.startswith("tags::"):
-            issues.append(f"line {i}: bare #digit (creates phantom tag page)")
-        if "{{" in line and not line.startswith("```"):
-            issues.append(f"line {i}: unescaped {{{{ macro")
-        if re.search(r'^[a-z-]+:(?!:)', line) and not line.startswith("```") and not line.startswith("  "):
-            issues.append(f"line {i}: single-colon property (should be ::)")
+        issues.extend(_check_line(line, i, is_property_zone=(i <= 8)))
 
     return issues
 
@@ -253,12 +266,7 @@ def _lint_vault(category: str | None, limit: int) -> list[dict]:
                     has_type = True
                 if line.startswith("date::"):
                     has_date = True
-                if re.search(r'(?<!\`)#\d', line) and not line.startswith("tags::"):
-                    issues.append(f"line {i}: bare #digit")
-                if "{{" in line and not line.startswith("```"):
-                    issues.append(f"line {i}: unescaped {{{{ macro")
-                if re.search(r'^[a-z-]+:(?!:)', line) and not line.startswith("```") and not line.startswith("  ") and not line.startswith("    "):
-                    issues.append(f"line {i}: single-colon property '{line[:40]}'")
+                issues.extend(_check_line(line, i, is_property_zone=(i <= 8)))
 
             if not has_title:
                 issues.append("missing title:: property")
