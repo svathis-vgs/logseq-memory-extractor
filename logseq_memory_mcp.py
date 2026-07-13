@@ -2,11 +2,12 @@
 """
 Logseq vault MCP server — on-demand semantic search and write access.
 
-Exposes four tools:
+Exposes five tools:
   search_vault   — semantic similarity search over vault_index.npz
   read_page      — read the full content of a vault page by path
   write_insight  — create a new Logseq insight page mid-session
   list_recent    — list recently modified vault pages by category
+  lint_vault     — scan vault for Logseq format violations
 
 The server loads the embedding model and index once at startup.
 Set TRANSFORMERS_OFFLINE=1 and HF_DATASETS_OFFLINE=1 in the MCP server
@@ -32,8 +33,17 @@ Register in ~/.claude/settings.json:
 
 import asyncio
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
+
+
+def _notify(title: str, message: str) -> None:
+    subprocess.run(
+        ["osascript", "-e",
+         f'display notification "{message}" with title "{title}"'],
+        capture_output=True,
+    )
 
 LOGSEQ_PAGES_DIR = Path("~/VGS/Notes/pages").expanduser()
 INDEX_PATH = Path("~/.claude/vault_index.npz").expanduser()
@@ -41,6 +51,7 @@ MODEL_NAME = "all-MiniLM-L6-v2"
 MIN_SCORE = 0.38
 MAX_FILE_CHARS = 1500
 CATEGORIES = {"patterns", "mistakes", "decisions", "context"}
+STALENESS_DAYS = {"fresh": 7, "aging": 14, "stale": 30}
 
 _TYPE_LABEL = {
     "patterns":  "Pattern",
@@ -86,6 +97,42 @@ def _ensure_loaded() -> bool:
 # Tool implementations
 # ---------------------------------------------------------------------------
 
+def _staleness_label(path: Path) -> str:
+    text = path.read_text(errors="replace")
+    for line in text.splitlines()[:8]:
+        if line.startswith("last-updated::"):
+            date_str = line.split("::", 1)[1].strip().strip("[]")
+            try:
+                updated = datetime.strptime(date_str, "%Y/%m/%d")
+                age = (datetime.now() - updated).days
+                if age <= STALENESS_DAYS["fresh"]:
+                    return "fresh"
+                elif age <= STALENESS_DAYS["aging"]:
+                    return "aging"
+                elif age <= STALENESS_DAYS["stale"]:
+                    return "stale"
+                else:
+                    return f"abandoned ({age}d)"
+            except ValueError:
+                pass
+        if line.startswith("date::"):
+            date_str = line.split("::", 1)[1].strip().strip("[]")
+            try:
+                created = datetime.strptime(date_str, "%Y/%m/%d")
+                age = (datetime.now() - created).days
+                if age <= STALENESS_DAYS["fresh"]:
+                    return "fresh"
+                elif age <= STALENESS_DAYS["aging"]:
+                    return "aging"
+                elif age <= STALENESS_DAYS["stale"]:
+                    return "stale"
+                else:
+                    return f"abandoned ({age}d)"
+            except ValueError:
+                pass
+    return "unknown"
+
+
 def _search(query: str, top_k: int, category: str | None) -> list[dict]:
     import numpy as np
     if not _ensure_loaded():
@@ -104,6 +151,7 @@ def _search(query: str, top_k: int, category: str | None) -> list[dict]:
             results.append({
                 "path": str(path),
                 "score": round(score, 3),
+                "staleness": _staleness_label(path),
                 "content": path.read_text(errors="replace")[:MAX_FILE_CHARS],
             })
         if len(results) >= top_k:
@@ -143,6 +191,96 @@ def _format_detail(detail: str) -> str:
     return "\n".join(result)
 
 
+def _sanitize(text: str) -> str:
+    """Sanitize text for Logseq round-trip safety."""
+    text = re.sub(r'(?<!\`)#(\d)', r'`#\1`', text)
+    text = text.replace("{{", "`{{").replace("}}", "}}`")
+    return text
+
+
+def _verify_page(filepath: Path) -> list[str]:
+    """Post-write verification — check a single file for format violations."""
+    issues = []
+    text = filepath.read_text(errors="replace")
+    lines = text.splitlines()
+
+    backtick_count = text.count("`")
+    if backtick_count % 2 != 0:
+        issues.append("odd backtick count (unclosed inline code)")
+
+    for i, line in enumerate(lines, 1):
+        if re.search(r'(?<!\`)#\d', line) and not line.startswith("tags::"):
+            issues.append(f"line {i}: bare #digit (creates phantom tag page)")
+        if "{{" in line and not line.startswith("```"):
+            issues.append(f"line {i}: unescaped {{{{ macro")
+        if re.search(r'^[a-z-]+:(?!:)', line) and not line.startswith("```") and not line.startswith("  "):
+            issues.append(f"line {i}: single-colon property (should be ::)")
+
+    return issues
+
+
+def _lint_vault(category: str | None, limit: int) -> list[dict]:
+    """Scan vault files for Logseq format violations."""
+    dirs = (
+        [LOGSEQ_PAGES_DIR / "claude" / category] if category
+        else [LOGSEQ_PAGES_DIR / "claude" / c for c in CATEGORIES]
+    )
+    if category and category not in CATEGORIES:
+        return [{"error": f"Unknown category '{category}'"}]
+
+    findings: list[dict] = []
+    scanned = 0
+    for d in dirs:
+        if not d.exists():
+            continue
+        for p in sorted(d.glob("*.md")):
+            scanned += 1
+            text = p.read_text(errors="replace")
+            lines = text.splitlines()
+            issues = []
+
+            backtick_count = text.count("`")
+            if backtick_count % 2 != 0:
+                issues.append("odd backtick count (unclosed inline code)")
+
+            has_title = False
+            has_type = False
+            has_date = False
+            for i, line in enumerate(lines, 1):
+                if line.startswith("title::"):
+                    has_title = True
+                if line.startswith("type::"):
+                    has_type = True
+                if line.startswith("date::"):
+                    has_date = True
+                if re.search(r'(?<!\`)#\d', line) and not line.startswith("tags::"):
+                    issues.append(f"line {i}: bare #digit")
+                if "{{" in line and not line.startswith("```"):
+                    issues.append(f"line {i}: unescaped {{{{ macro")
+                if re.search(r'^[a-z-]+:(?!:)', line) and not line.startswith("```") and not line.startswith("  ") and not line.startswith("    "):
+                    issues.append(f"line {i}: single-colon property '{line[:40]}'")
+
+            if not has_title:
+                issues.append("missing title:: property")
+            if not has_type:
+                issues.append("missing type:: property")
+            if not has_date:
+                issues.append("missing date:: property")
+
+            if issues:
+                findings.append({
+                    "path": str(p),
+                    "name": p.name,
+                    "issues": issues,
+                })
+                if len(findings) >= limit:
+                    break
+        if len(findings) >= limit:
+            break
+
+    return [{"scanned": scanned, "findings_count": len(findings), "findings": findings}]
+
+
 def _write_insight(
     insight_type: str,
     title: str,
@@ -174,21 +312,30 @@ def _write_insight(
     session_str = session or f"Session {datetime.now().strftime('%Y-%m-%d')} — manual"
     type_label = _TYPE_LABEL[insight_type]
 
+    title_safe = _sanitize(title)
+    summary_safe = _sanitize(summary.strip())
+    detail_safe = _sanitize(detail)
+
     content = (
-        f"title:: {type_label}: {title}\n"
+        f"title:: {type_label}: {title_safe}\n"
         f"type:: [[{type_label.lower()}]]\n"
         f"date:: [[{today}]]\n"
+        f"last-updated:: [[{today}]]\n"
         f"project:: [[{project_str}]]\n"
         f"session:: [[{session_str}]]\n"
         f"tags:: {tags_str}\n"
         f"\n"
         f"- ## Summary\n"
-        f"  - {summary.strip()}\n"
+        f"  - {summary_safe}\n"
         f"\n"
         f"- ## Detail\n"
-        f"{_format_detail(detail)}\n"
+        f"{_format_detail(detail_safe)}\n"
     )
     filepath.write_text(content, encoding="utf-8")
+
+    verify_issues = _verify_page(filepath)
+    if verify_issues:
+        return f"Written: {filepath}\n⚠️ Post-write issues: {'; '.join(verify_issues)}"
     return f"Written: {filepath}"
 
 
@@ -340,6 +487,29 @@ async def serve() -> None:
                     },
                 },
             ),
+            types.Tool(
+                name="lint_vault",
+                description=(
+                    "Scan vault files for Logseq format violations: odd backtick counts, "
+                    "bare #digits (phantom tag pages), unescaped {{ macros, single-colon "
+                    "properties, and missing required properties (title, type, date)."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "enum": ["patterns", "mistakes", "decisions", "context"],
+                            "description": "Restrict scan to a single category (optional)",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": 50,
+                            "description": "Maximum number of files with issues to return",
+                        },
+                    },
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -351,10 +521,12 @@ async def serve() -> None:
                 category=arguments.get("category"),
             )
             if not results:
+                _notify("🔍 Logseq Vault", "search_vault — no matches")
                 text = "No matches above similarity threshold."
             else:
+                _notify("🔍 Logseq Vault", f"search_vault — {len(results)} match(es)")
                 parts = [
-                    f"### {Path(r['path']).stem} ({int(r['score'] * 100)}%)\n"
+                    f"### {Path(r['path']).stem} ({int(r['score'] * 100)}%) [{r['staleness']}]\n"
                     f"**Path:** {r['path']}\n\n{r['content']}"
                     for r in results
                 ]
@@ -373,6 +545,9 @@ async def serve() -> None:
                 tags=arguments.get("tags"),
                 project=arguments.get("project"),
             )
+            skipped = result.startswith("Skipped")
+            icon = "⏭️" if skipped else "✍️"
+            _notify(f"{icon} Logseq Vault", f"write_insight — {arguments['title'][:50]}")
             return [types.TextContent(type="text", text=result)]
 
         elif name == "list_recent":
@@ -388,6 +563,27 @@ async def serve() -> None:
                     for r in items
                 ]
                 text = "\n".join(lines)
+            return [types.TextContent(type="text", text=text)]
+
+        elif name == "lint_vault":
+            results = _lint_vault(
+                category=arguments.get("category"),
+                limit=int(arguments.get("limit", 50)),
+            )
+            if results and "error" in results[0]:
+                text = results[0]["error"]
+            else:
+                info = results[0]
+                if info["findings_count"] == 0:
+                    text = f"Scanned {info['scanned']} files — no issues found."
+                else:
+                    lines = [f"Scanned {info['scanned']} files — {info['findings_count']} with issues:\n"]
+                    for f in info["findings"]:
+                        lines.append(f"**{f['name']}**")
+                        for issue in f["issues"]:
+                            lines.append(f"  - {issue}")
+                    text = "\n".join(lines)
+            _notify("🔍 Logseq Vault", f"lint_vault — {results[0].get('findings_count', '?')} files with issues")
             return [types.TextContent(type="text", text=text)]
 
         return [types.TextContent(type="text", text=f"Unknown tool: {name}")]

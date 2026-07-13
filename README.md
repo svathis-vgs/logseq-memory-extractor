@@ -102,13 +102,19 @@ Replace `/Users/YOU` with your home directory path.
 
 The MCP server enables Claude to search the vault mid-conversation and write insights immediately without waiting for session end.
 
-Add to `~/.claude/settings.json` under `"mcpServers"`:
+**Important:** Desktop apps (Claude Code Desktop, Codex Desktop) launch MCP servers without sourcing your shell profile, so `python3` resolves to nothing and pyenv shims fail silently. Use the full resolved binary path:
+
+```sh
+python3 -c "import sys; print(sys.executable)"
+```
+
+**Claude Code Desktop** — add to `~/.claude/settings.json` under `"mcpServers"`:
 
 ```json
 {
   "mcpServers": {
     "logseq-vault": {
-      "command": "python3",
+      "command": "/Users/YOU/.pyenv/versions/3.x.x/bin/python3",
       "args": ["/Users/YOU/.claude/hooks/logseq_memory_mcp.py"],
       "env": {
         "TRANSFORMERS_OFFLINE": "1",
@@ -119,16 +125,31 @@ Add to `~/.claude/settings.json` under `"mcpServers"`:
 }
 ```
 
-Replace `/Users/YOU` with your home directory. The `TRANSFORMERS_OFFLINE` flags prevent the embedding model from trying to reach HuggingFace on startup — the model is already cached locally after the index build step.
+**Codex Desktop** — add to `~/.codex/config.toml`:
 
-The server exposes four tools Claude can call:
+```toml
+[mcp_servers.logseq-vault]
+command = "/Users/YOU/.pyenv/versions/3.x.x/bin/python3"
+args = ["/Users/YOU/.claude/hooks/logseq_memory_mcp.py"]
 
-| Tool | Description |
-|------|-------------|
-| `search_vault(query, top_k, category)` | Semantic search — targeted queries mid-conversation |
-| `read_page(path)` | Read a vault page returned by search |
-| `write_insight(type, title, summary, detail, tags, project)` | Write a new insight immediately |
-| `list_recent(category, limit)` | Browse recently modified pages |
+[mcp_servers.logseq-vault.env]
+TRANSFORMERS_OFFLINE = "1"
+HF_DATASETS_OFFLINE = "1"
+```
+
+Replace the python path with the output of the command above. The `TRANSFORMERS_OFFLINE` flags prevent the embedding model from trying to reach HuggingFace on startup — the model is already cached locally after the index build step.
+
+The server exposes five tools and fires macOS notifications on key events:
+
+| Tool | Description | Notification |
+|------|-------------|--------------|
+| `search_vault(query, top_k, category)` | Semantic search with staleness labels (fresh/aging/stale/abandoned) | `🔍 search_vault — N match(es)` |
+| `read_page(path)` | Read a vault page returned by search | — |
+| `write_insight(type, title, summary, detail, tags, project)` | Write with compose-time sanitization and post-write verification | `✍️ write_insight — <title>` (or `⏭️` if dedup skipped) |
+| `list_recent(category, limit)` | Browse recently modified pages | — |
+| `lint_vault(category, limit)` | Scan for Logseq format violations (phantom tags, broken backticks, bad properties) | `🔍 lint_vault — N files with issues` |
+
+Restart the desktop app after editing the config for the server to appear.
 
 ### 5. Add memory injection to CLAUDE.md
 
@@ -174,6 +195,26 @@ Two settings in `logseq_memory_extractor.py` keep the vault from growing unbound
 **Extraction prompt** — instructs the extractor to only capture non-obvious, project-specific insights (max 5 per category per session). Empirically cuts the daily accumulation rate from ~330 to ~140 files/day.
 
 **Slug near-match dedup** — before writing a new file, checks whether a file with the same 2-word slug prefix already exists in the category subdirectory. Prevents same-concept files with different trailing words from accumulating (e.g. `kafka-rebalance-storm` blocks `kafka-rebalance-recovery`).
+
+## Vault health
+
+Three features keep the vault healthy over time:
+
+**Staleness tracking** — every insight page carries a `last-updated::` property (set at write time). Search results include a staleness label: `fresh` (0–7 days), `aging` (8–14d), `stale` (15–30d), or `abandoned (Nd)`. This surfaces context that may be outdated — a decision from 3 months ago carries less weight than one from yesterday. Falls back to `date::` if `last-updated::` is missing.
+
+**Compose-time sanitization** — `write_insight` sanitizes content before writing:
+- Escapes bare `#digits` → `` `#1` `` (prevents phantom Logseq tag pages)
+- Escapes `{{ }}` macros → backtick-wrapped (prevents broken Logseq macros)
+- Post-write verification re-reads the file and checks for odd backtick counts, surviving bare `#digits`, unescaped macros, and single-colon properties
+
+**Lint tool** — `lint_vault` scans all vault files (or a single category) for format violations:
+- Odd backtick count (unclosed inline code)
+- Bare `#digit` outside `tags::` lines (phantom tag pages)
+- Unescaped `{{ }}` macros
+- Single-colon properties (`key:` instead of `key::`)
+- Missing required properties (`title::`, `type::`, `date::`)
+
+Run periodically or after bulk imports to catch format issues before they create phantom pages in Logseq.
 
 ## Vault structure
 
@@ -232,28 +273,33 @@ Only genuinely non-obvious items are written — the extraction prompt prefers e
 
 **Trigger extraction mid-session** using the `/extract-memory` custom slash command.
 
-Create `~/.claude/commands/extract-memory.md`:
+Create `~/.claude/commands/extract-memory.md` with content that tells Claude to:
+1. Review the current conversation directly
+2. Call `mcp__logseq-vault__search_vault` before each candidate to check for duplicates
+3. Call `mcp__logseq-vault__write_insight` only for insights not already in the vault
+4. Report count written, count skipped, and titles written
+
+This approach requires the MCP server (step 4). It has no subprocess or recursion risk, and
+dedup is checked per-insight with full conversation context. The Stop hook's `logseq_memory_extractor.py`
+still runs automatically at session end — `/extract-memory` is the manual mid-session trigger.
+
+Example `~/.claude/commands/extract-memory.md`:
 
 ```markdown
-Run the Logseq memory extractor to capture insights from this session.
+Review this conversation and capture non-obvious, reusable insights into the Logseq vault
+using the `logseq-vault` MCP server.
 
-Execute this command (the session ID is auto-detected from the `CLAUDE_CODE_SESSION_ID` env var
-that Claude Code injects; falls back to `"manual"` if for some reason it isn't set):
+For each genuine insight, call `mcp__logseq-vault__search_vault` first (top_k=3). If a
+matching page exists and covers it well, skip it. Otherwise call `mcp__logseq-vault__write_insight`.
 
-```sh
-SID="${CLAUDE_CODE_SESSION_ID:-manual}"
-echo "{\"session_id\": \"$SID\", \"cwd\": \"$PWD\"}" \
-  | python3 ~/.claude/hooks/logseq_memory_extractor.py
-```
+Quality bar — only capture if ALL are true:
+1. Non-obvious: a competent engineer wouldn't already know this
+2. Reusable: applies beyond this specific task
+3. Concrete: specific enough to act on
+4. Not already in vault (verified by search above)
 
-Notes:
-- `$PWD` and `$CLAUDE_CODE_SESSION_ID` are shell variables — leave them as-is; they expand at runtime.
-- The session ID matters because the extractor uses it to find the transcript JSONL under
-  `~/.claude/projects/`. If you pass the literal string `"manual"` (no env var set), it falls back
-  to picking the newest JSONL by mtime, which may not be the current session.
-
-After the command completes, report what was written (count of insights + list of files
-modified in the last few minutes).
+Aim for 3–8 insights per session; never more than 15.
+After writing, report: count written, count skipped (duplicate), list of titles written.
 ```
 
 **Rebuild the full index** (after vault consolidation or model change):
@@ -316,6 +362,7 @@ both the extractor and retriever exit immediately when this variable is detected
 | `MODEL_NAME` | `all-MiniLM-L6-v2` | Same model as the retriever |
 | `MIN_SCORE` | `0.38` | Cosine similarity floor for `search_vault` |
 | `MAX_FILE_CHARS` | `1500` | Characters per search result (larger than retriever — not auto-injected) |
+| `STALENESS_DAYS` | `{"fresh": 7, "aging": 14, "stale": 30}` | Day thresholds for staleness labels in search results |
 
 ## License
 
