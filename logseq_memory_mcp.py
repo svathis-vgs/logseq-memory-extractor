@@ -306,10 +306,14 @@ def _write_insight(
     subdir = LOGSEQ_PAGES_DIR / "claude" / insight_type
     subdir.mkdir(parents=True, exist_ok=True)
 
-    # Near-match dedup — same 2-word slug prefix already exists → skip
+    # Near-match dedup: exact slug match always blocks; prefix match needs
+    # ≥3 slug segments to avoid false positives (e.g. "access-logger" matching
+    # unrelated pages like "access-logger-rocksdb-state-dir-footprint").
     slug_parts = slug.split("-")
-    prefix_key = "-".join(slug_parts[:2]) if len(slug_parts) >= 2 else slug
-    existing = list(subdir.glob(f"{prefix}{prefix_key}*.md"))
+    existing = list(subdir.glob(f"{prefix}{slug}.md"))
+    if not existing and len(slug_parts) >= 3:
+        prefix_key = "-".join(slug_parts[:3])
+        existing = list(subdir.glob(f"{prefix}{prefix_key}*.md"))
     if existing:
         return f"Skipped — similar page already exists: {existing[0].name}"
 
