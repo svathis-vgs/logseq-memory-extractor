@@ -44,6 +44,12 @@ Codex task ends
   → $extract-memory writes individual Codex insights on demand
 ```
 
+Every newly created insight page, and every automatic session page, receives
+`date::` and `last-updated::` properties. Both dates are identical at creation.
+Existing insight files are immutable: a duplicate write is skipped rather than
+rewriting the page, so there is currently no later update operation that changes
+`last-updated::`.
+
 ## Codex setup
 
 Copy `logseq_memory_codex.py`, `logseq_memory_shared.py`,
@@ -75,11 +81,20 @@ model:: gpt-5.6-sol
 The Terra extraction worker is not included in `model::` unless it participated
 in the original user-facing task.
 
+Before queuing, the adapter excludes system/developer instructions, injected
+`AGENTS.md` context, reasoning, and tool calls/results, then applies best-effort
+secret redaction. Queue snapshots are written atomically with mode `0600`.
+Session processing is idempotent across queued, running, processed, and failed
+states. Completed and failed jobs retain metadata only, never transcript text.
+The detached Terra worker runs ephemerally with low reasoning effort, hooks and
+user configuration disabled, a read-only sandbox, and a temporary working
+directory.
+
 ## Prerequisites
 
 - [Claude Code Desktop](https://claude.ai/download) — authentication is reused from the Desktop app
 - [Logseq](https://logseq.com) with an existing graph (or create a new one)
-- Python 3.10+
+- Python 3.10+ (the regression suite runs in CI on Python 3.11 and 3.13)
 - For semantic search and MCP server: `pip install sentence-transformers numpy mcp`
 
 ## Installation
@@ -245,7 +260,14 @@ Two settings in `logseq_memory_extractor.py` keep the vault from growing unbound
 
 Three features keep the vault healthy over time:
 
-**Staleness tracking** — every insight page carries a `last-updated::` property (set at write time). Search results include a staleness label: `fresh` (0–7 days), `aging` (8–14d), `stale` (15–30d), or `abandoned (Nd)`. This surfaces context that may be outdated — a decision from 3 months ago carries less weight than one from yesterday. Falls back to `date::` if `last-updated::` is missing.
+**Staleness tracking** — every newly created insight page and automatic session
+page carries `last-updated::`, set to the creation date. Search results include a
+staleness label: `fresh` (0–7 days), `aging` (8–14d), `stale` (15–30d), or
+`abandoned (Nd)`. Existing pages are not backfilled; search falls back to
+`date::` when the property is absent. Writers currently create new files or skip
+duplicates, so `last-updated::` changes only if a future page-update operation
+explicitly refreshes it. The property is not part of semantic-index embedding
+input, which is derived from the page title and summary.
 
 **Compose-time sanitization** — `write_insight` sanitizes content before writing:
 - Escapes bare `#digits` → `` `#1` `` (prevents phantom Logseq tag pages)
@@ -289,8 +311,11 @@ Every insight page uses Logseq's native property syntax:
 title:: Pattern: Use Pathlib Over Os
 type:: [[pattern]]
 date:: [[2026/04/21]]
+last-updated:: [[2026/04/21]]
 project:: [[my-project]]
 session:: [[Session 2026-04-21 abc12345 — my-project]]
+creator:: claude
+model:: claude-sonnet-4-6
 tags:: [[python]] [[filesystem]]
 
 - ## Summary
@@ -313,6 +338,13 @@ tags:: [[python]] [[filesystem]]
 | `session` | Per-session summary with links to all insights |
 
 Only genuinely non-obvious items are written — the extraction prompt prefers empty arrays over low-quality filler.
+
+Two-word-prefix deduplication is intentionally checked before each page write.
+For compatibility with the original Claude implementation, an automatically
+generated session page still lists the proposed insight title even when the
+corresponding page write was skipped as a duplicate. This can produce a dangling
+wikilink and is covered by regression tests; changing it requires an explicit
+compatibility decision.
 
 ## Manual operations
 
@@ -360,6 +392,29 @@ If you have a SOCKS proxy active (`ALL_PROXY` env var), also unset it: `env -u A
 ```sh
 TRANSFORMERS_OFFLINE=1 python3 ~/.claude/hooks/logseq_memory_index.py --quiet
 ```
+
+## Regression and compatibility tests
+
+Claude's original implementation is the compatibility specification. Commit
+`b630a63` is the frozen pre-refactor baseline used by the differential test.
+Run the same 26-test suite used by CI with:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+The differential runner compares the legacy and current implementations against
+identical temporary vaults. It permits one intentional Claude-visible change:
+the current renderer adds `last-updated::` immediately after `date::` on insight
+and session pages. After removing only that property, the resulting trees must
+remain byte-identical. Prompt bytes, extraction schema, `claude -p` invocation,
+transcript parsing, dedup decisions, session and digest contents, index input,
+diagnostics, existing MCP schemas, and all other rendered bytes remain protected.
+
+When changing persistence behavior, add a failing regression test first and run
+the complete suite on Python 3.11 and the deployed Python 3.13 runtime. A
+Claude-visible mismatch beyond an explicitly authorized contract change blocks
+deployment.
 
 ## Authentication
 

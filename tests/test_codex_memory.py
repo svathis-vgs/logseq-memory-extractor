@@ -212,12 +212,13 @@ class CodexWorkerTests(TempEnvironment):
         self.assertIn("creator:: codex", content)
         self.assertIn("model:: gpt-5.6-sol", content)
         self.assertNotIn("model:: gpt-5.6-terra", content)
-        self.assertNotIn("last-updated::", content)
+        self.assertIn("last-updated:: [[2026/07/29]]", content)
         session = next(
             (self.root / "pages" / "claude" / "sessions").rglob("*.md")
         ).read_text()
         self.assertIn("title:: Session 2026-07-29 session- — test", session)
         self.assertIn("creator:: codex", session)
+        self.assertIn("last-updated:: [[2026/07/29]]", session)
         marker = self.root / "state" / "processed" / "session-456.json"
         self.assertTrue(marker.exists())
 
@@ -310,7 +311,7 @@ class CodexOnDemandTests(TempEnvironment):
             "  - It captures task exit.\n    - Keep the original model\n",
             content,
         )
-        self.assertNotIn("last-updated::", content)
+        self.assertRegex(content, r"(?m)^last-updated:: \[\[\d{4}/\d{2}/\d{2}\]\]$")
 
     def test_concurrent_same_prefix_writes_create_one_page(self):
         session = "Session 2026-07-29 abcdef12 — demo"

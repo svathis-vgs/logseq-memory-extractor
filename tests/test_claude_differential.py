@@ -42,8 +42,30 @@ def snapshot_tree(root: Path) -> dict[str, bytes]:
     }
 
 
+def with_last_updated(tree: dict[str, bytes]) -> dict[str, bytes]:
+    expected = {}
+    page_roots = (
+        "claude/patterns/",
+        "claude/mistakes/",
+        "claude/decisions/",
+        "claude/context/",
+        "claude/sessions/",
+    )
+    for path, content in tree.items():
+        if not path.startswith(page_roots):
+            expected[path] = content
+            continue
+        lines = content.splitlines(keepends=True)
+        for index, line in enumerate(lines):
+            if line.startswith(b"date:: "):
+                lines.insert(index + 1, b"last-updated:: " + line[len(b"date:: ") :])
+                break
+        expected[path] = b"".join(lines)
+    return expected
+
+
 class ClaudeDifferentialTests(unittest.TestCase):
-    def test_refactor_matches_frozen_baseline(self):
+    def test_refactor_matches_frozen_baseline_except_last_updated(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             legacy = load_baseline(root)
@@ -105,7 +127,10 @@ class ClaudeDifferentialTests(unittest.TestCase):
                     module.update_index()
                     module.write_digest()
 
-            self.assertEqual(snapshot_tree(roots[0]), snapshot_tree(roots[1]))
+            self.assertEqual(
+                with_last_updated(snapshot_tree(roots[0])),
+                snapshot_tree(roots[1]),
+            )
 
 
 if __name__ == "__main__":

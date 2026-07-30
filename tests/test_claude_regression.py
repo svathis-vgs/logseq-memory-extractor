@@ -170,6 +170,7 @@ class ClaudePageContractTests(unittest.TestCase):
         expected = """title:: Pattern: Retry Safely
 type:: [[pattern]]
 date:: [[2026/07/30]]
+last-updated:: [[2026/07/30]]
 project:: [[demo]]
 session:: [[Session 2026-07-30 abcdef12 — demo]]
 creator:: claude
@@ -247,6 +248,7 @@ tags:: [[incident]] [[retry]]
 description:: Investigate retries
 type:: [[session]]
 date:: [[2026/07/30]]
+last-updated:: [[2026/07/30]]
 project:: [[demo]]
 session:: [[Session 2026-07-30 abcdef12 — demo]]
 creator:: claude
