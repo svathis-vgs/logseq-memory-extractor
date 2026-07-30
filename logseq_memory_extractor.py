@@ -110,6 +110,29 @@ def extract_conversation_title(raw: str) -> str:
     return ""
 
 
+def extract_models(raw: str) -> list[str]:
+    """Return the distinct assistant model names/versions used in this session,
+    in first-seen order, from the JSONL transcript's message.model field."""
+    models: list[str] = []
+    seen: set[str] = set()
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        msg = entry.get("message", {})
+        if not isinstance(msg, dict):
+            continue
+        model = msg.get("model")
+        if isinstance(model, str) and model and model != "<synthetic>" and model not in seen:
+            seen.add(model)
+            models.append(model)
+    return models
+
+
 def parse_transcript(raw: str) -> str:
     """Convert JSONL lines to readable text, keeping last MAX_TRANSCRIPT_CHARS chars."""
     lines = []
@@ -155,12 +178,19 @@ def call_claude(transcript_text: str) -> dict:
     prompt = EXTRACTION_PROMPT + transcript_text
 
     # Inherit the full environment so auth (CLAUDE_CODE_OAUTH_TOKEN) is available,
-    # then set the recursion guard and strip socks5h proxy vars that the claude
-    # CLI doesn't support (they cause exit code 1).
+    # then set the recursion guard and strip ALL proxy vars that interfere with
+    # the claude CLI's API calls (Teleport socks proxies, HTTP proxies, etc.).
     env = dict(os.environ)
     env["LOGSEQ_EXTRACTOR_RUNNING"] = "1"
-    for key in ("ALL_PROXY", "all_proxy", "FTP_PROXY", "ftp_proxy", "GRPC_PROXY", "grpc_proxy"):
-        env.pop(key, None)
+    for key in list(env):
+        if key.lower().replace("_", "") in (
+            "allproxy", "httpproxy", "httpsproxy", "ftpproxy", "grpcproxy",
+            "rsyncproxy", "dockerhttpproxy", "dockerhttpsproxy",
+        ) or key.startswith("CLOUDSDK_PROXY"):
+            env.pop(key, None)
+    for key in list(env):
+        if key.startswith("CLAUDE_CODE") or key == "CLAUDECODE":
+            env.pop(key, None)
 
     # JSON Schema enforces structured output at the API level — model cannot return prose.
     schema = json.dumps({
@@ -241,7 +271,7 @@ def logseq_date() -> str:
 # ── Logseq page writers ────────────────────────────────────────────────────────
 
 def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
-                  project: str, session_title: str) -> str:
+                  project: str, session_title: str, models: list[str] | None = None) -> str:
     today = logseq_date()
     tag_str = " ".join(f"[[{t}]]" for t in tags) if tags else ""
     lines = [
@@ -250,7 +280,10 @@ def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
         f"date:: {today}",
         f"project:: [[{project}]]",
         f"session:: [[{session_title}]]",
+        "creator:: claude",
     ]
+    if models:
+        lines.append(f"model:: {', '.join(models)}")
     if tag_str:
         lines.append(f"tags:: {tag_str}")
     # Render detail: first line gets the bullet prefix; subsequent lines (sub-bullets) pass through
@@ -338,7 +371,8 @@ def _update_vault_index(new_paths: list[Path]) -> None:
         print(f"[logseq-memory] index update skipped: {e}", file=sys.stderr)
 
 
-def write_pages(insights: dict, project_name: str, session_id: str, session_slug: str, session_title: str) -> list[str]:
+def write_pages(insights: dict, project_name: str, session_id: str, session_slug: str, session_title: str,
+                models: list[str] | None = None) -> list[str]:
     """Write one page per insight. Returns list of [[namespace/links]]."""
     written: list[str] = []
     new_paths: list[Path] = []
@@ -385,6 +419,7 @@ def write_pages(insights: dict, project_name: str, session_id: str, session_slug
                     tags=item.get("tags", []),
                     project=project_name,
                     session_title=session_title,
+                    models=models,
                 )
                 dest.write_text(content.lstrip("\n"))
                 new_paths.append(dest)
@@ -408,7 +443,7 @@ def _is_dayflow_session(conversation_title: str, session_summary: str) -> bool:
 
 def write_session(insights: dict, project_name: str,
                   session_id: str, session_slug: str, written_links: list[str],
-                  conversation_title: str = "") -> None:
+                  conversation_title: str = "", models: list[str] | None = None) -> None:
     today = logseq_date()
     date_folder = date.today().strftime("%Y_%m_%d")
     sessions_dir = LOGSEQ_PAGES_DIR / "claude" / "sessions" / date_folder
@@ -426,8 +461,11 @@ def write_session(insights: dict, project_name: str,
         f"date:: {today}",
         f"project:: [[{project_name}]]",
         f"session:: [[{session_title}]]",
-        "exclude-from-graph-view:: true",
+        "creator:: claude",
     ]
+    if models:
+        lines.append(f"model:: {', '.join(models)}")
+    lines.append("exclude-from-graph-view:: true")
     if _is_dayflow_session(conversation_title, session_summary):
         lines.append("tags:: [[dayflow]]")
     lines += [
@@ -599,6 +637,7 @@ def main() -> None:
         sys.exit(0)
 
     conversation_title = extract_conversation_title(transcript_raw)
+    models = extract_models(transcript_raw)
     transcript_text = parse_transcript(transcript_raw)
     if len(transcript_text) < 200:
         sys.exit(0)  # Session too short to be worth extracting
@@ -615,8 +654,8 @@ def main() -> None:
     session_slug = f"{today}-{session_short}"
     session_title = f"Session {today} {session_short} — {project_name}"
 
-    written_links = write_pages(insights, project_name, session_short, session_slug, session_title)
-    write_session(insights, project_name, session_short, session_slug, written_links, conversation_title)
+    written_links = write_pages(insights, project_name, session_short, session_slug, session_title, models)
+    write_session(insights, project_name, session_short, session_slug, written_links, conversation_title, models)
     update_index()
     write_digest()
 

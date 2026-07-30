@@ -294,6 +294,7 @@ def _write_insight(
     title: str,
     summary: str,
     detail: str,
+    model: str,
     tags: list[str] | None = None,
     project: str | None = None,
     session: str | None = None,
@@ -335,6 +336,8 @@ def _write_insight(
         f"last-updated:: [[{today}]]\n"
         f"project:: [[{project_str}]]\n"
         f"session:: [[{session_str}]]\n"
+        f"creator:: claude\n"
+        f"model:: {_sanitize(model)}\n"
         f"tags:: {tags_str}\n"
         f"\n"
         f"- ## Summary\n"
@@ -476,8 +479,15 @@ async def serve() -> None:
                             "type": "string",
                             "description": "Project name (default: VGS)",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Exact model name/version of the calling session "
+                                "(e.g. 'claude-opus-4-6'), so the page records what wrote it."
+                            ),
+                        },
                     },
-                    "required": ["type", "title", "summary", "detail"],
+                    "required": ["type", "title", "summary", "detail", "model"],
                 },
             ),
             types.Tool(
@@ -554,6 +564,7 @@ async def serve() -> None:
                 title=arguments["title"],
                 summary=arguments["summary"],
                 detail=arguments["detail"],
+                model=arguments["model"],
                 tags=arguments.get("tags"),
                 project=arguments.get("project"),
             )
