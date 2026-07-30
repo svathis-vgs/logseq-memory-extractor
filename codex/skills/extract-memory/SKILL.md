@@ -24,6 +24,7 @@ immediately after deduplication; an empty extraction is valid.
    - Skip a candidate when an existing page already captures the conclusion.
 4. Write each novel candidate with `mcp__logseq_vault__write_codex_insight`:
    - Pass `type`, `title`, `summary`, `detail`, relevant tags, resolved project, resolved session, and the resolved models unchanged and in their original order.
+   - When `detail` contains a list, keep the introductory sentence on the first line and prefix every later item with four spaces and `- ` so Claude's renderer preserves it as a child outline.
    - Never include a model used only to perform memory extraction.
 5. Report titles written, duplicates skipped, and candidates rejected by the quality bar.
 

@@ -282,7 +282,7 @@ class CodexOnDemandTests(TempEnvironment):
             "decisions",
             "Use SessionEnd Lifecycle",
             "Use the lifecycle event.",
-            "It captures task exit.",
+            "It captures task exit.\n    - Keep the original model",
             session,
             ["gpt-5.6-sol", "gpt-5.6-sol"],
             ["codex"],
@@ -306,6 +306,10 @@ class CodexOnDemandTests(TempEnvironment):
         self.assertIn("creator:: codex", content)
         self.assertIn("model:: gpt-5.6-sol", content)
         self.assertIn(f"session:: [[{session}]]", content)
+        self.assertIn(
+            "  - It captures task exit.\n    - Keep the original model\n",
+            content,
+        )
         self.assertNotIn("last-updated::", content)
 
     def test_concurrent_same_prefix_writes_create_one_page(self):
