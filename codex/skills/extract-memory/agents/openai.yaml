@@ -1,0 +1,4 @@
+interface:
+  display_name: "Extract Memory"
+  short_description: "Save novel task insights to Logseq"
+  default_prompt: "Use $extract-memory to save the reusable insights from this task."

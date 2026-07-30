@@ -34,8 +34,10 @@ Register in ~/.claude/settings.json:
 import asyncio
 import re
 import subprocess
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+
+import logseq_memory_shared as shared
 
 
 def _notify(title: str, message: str) -> None:
@@ -289,7 +291,7 @@ def _lint_vault(category: str | None, limit: int) -> list[dict]:
     return [{"scanned": scanned, "findings_count": len(findings), "findings": findings}]
 
 
-def _write_insight(
+def _write_insight_unlocked(
     insight_type: str,
     title: str,
     summary: str,
@@ -352,6 +354,103 @@ def _write_insight(
     if verify_issues:
         return f"Written: {filepath}\n⚠️ Post-write issues: {'; '.join(verify_issues)}"
     return f"Written: {filepath}"
+
+
+def _write_insight(
+    insight_type: str,
+    title: str,
+    summary: str,
+    detail: str,
+    model: str,
+    tags: list[str] | None = None,
+    project: str | None = None,
+    session: str | None = None,
+) -> str:
+    """Preserve the existing Claude MCP writer while serializing vault writes."""
+    with shared.vault_lock():
+        return _write_insight_unlocked(
+            insight_type,
+            title,
+            summary,
+            detail,
+            model,
+            tags,
+            project,
+            session,
+        )
+
+
+def _write_codex_insight(
+    insight_type: str,
+    title: str,
+    summary: str,
+    detail: str,
+    session: str,
+    models: list[str],
+    tags: list[str] | None = None,
+    project: str | None = None,
+) -> str:
+    """Write one Codex insight through Claude's automatic page contract."""
+    if insight_type not in CATEGORIES:
+        return (
+            f"Invalid type '{insight_type}'. Must be one of: "
+            f"{', '.join(sorted(CATEGORIES))}"
+        )
+    ordered_models: list[str] = []
+    for raw in models:
+        value = str(raw).strip()
+        if value and value not in ordered_models:
+            ordered_models.append(value)
+    if not ordered_models:
+        return "Codex writes require at least one originating task model"
+    if not session.startswith("Session "):
+        return "Codex writes require a canonical Session title"
+
+    item_slug = _make_slug(title)
+    candidate = {
+        "slug": item_slug,
+        "summary": summary,
+        "detail": detail,
+        "tags": tags or [],
+    }
+    category = insight_type.rstrip("s")
+    subdir = LOGSEQ_PAGES_DIR / "claude" / insight_type
+    expected = subdir / f"{category}-{item_slug}.md"
+    current = date.today()
+
+    with shared.vault_lock():
+        before = set(subdir.glob("*.md")) if subdir.exists() else set()
+        shared.write_pages(
+            {insight_type: [candidate]},
+            project or "VGS",
+            "manual",
+            "manual",
+            session,
+            ordered_models,
+            pages_dir=LOGSEQ_PAGES_DIR,
+            update_index_fn=lambda paths: shared.update_vault_index(
+                paths, INDEX_PATH
+            ),
+            creator="codex",
+            today=current,
+        )
+        after = set(subdir.glob("*.md")) if subdir.exists() else set()
+        new_paths = after - before
+        if new_paths:
+            shared.update_index(LOGSEQ_PAGES_DIR, current)
+            shared.write_digest(LOGSEQ_PAGES_DIR, current)
+            written = expected if expected in new_paths else sorted(new_paths)[0]
+            return f"Written: {written}"
+
+        slug_words = item_slug.split("-")
+        prefix_2 = "-".join(slug_words[:2]) if len(slug_words) >= 2 else item_slug
+        matches = sorted(subdir.glob(f"{category}-{prefix_2}-*.md"))
+        duplicate = expected if expected.exists() else (matches[0] if matches else None)
+        return (
+            f"Skipped — similar page already exists: {duplicate.name}"
+            if duplicate
+            else "Skipped — no page written"
+        )
 
 
 def _list_recent(category: str | None, limit: int) -> list[dict]:
@@ -532,6 +631,67 @@ async def serve() -> None:
                     },
                 },
             ),
+            types.Tool(
+                name="write_codex_insight",
+                description=(
+                    "Create one Codex-authored insight using the automatic Claude "
+                    "page schema and two-word deduplication contract."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": [
+                                "patterns",
+                                "mistakes",
+                                "decisions",
+                                "context",
+                            ],
+                            "description": "Insight category",
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Short descriptive title",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "One-sentence summary",
+                        },
+                        "detail": {
+                            "type": "string",
+                            "description": "Concrete reusable explanation",
+                        },
+                        "session": {
+                            "type": "string",
+                            "description": "Canonical Session title from resolve-session",
+                        },
+                        "models": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "description": "Ordered original task model identifiers",
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Logseq tags (optional)",
+                        },
+                        "project": {
+                            "type": "string",
+                            "description": "Project name (default: VGS)",
+                        },
+                    },
+                    "required": [
+                        "type",
+                        "title",
+                        "summary",
+                        "detail",
+                        "session",
+                        "models",
+                    ],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -571,6 +731,25 @@ async def serve() -> None:
             skipped = result.startswith("Skipped")
             icon = "⏭️" if skipped else "✍️"
             _notify(f"{icon} Logseq Vault", f"write_insight — {arguments['title'][:50]}")
+            return [types.TextContent(type="text", text=result)]
+
+        elif name == "write_codex_insight":
+            result = _write_codex_insight(
+                insight_type=arguments["type"],
+                title=arguments["title"],
+                summary=arguments["summary"],
+                detail=arguments["detail"],
+                session=arguments["session"],
+                models=arguments["models"],
+                tags=arguments.get("tags"),
+                project=arguments.get("project"),
+            )
+            skipped = result.startswith("Skipped")
+            icon = "⏭️" if skipped else "✍️"
+            _notify(
+                f"{icon} Logseq Vault",
+                f"write_codex_insight — {arguments['title'][:50]}",
+            )
             return [types.TextContent(type="text", text=result)]
 
         elif name == "list_recent":

@@ -1,0 +1,30 @@
+{
+  "description": "Shared Logseq memory extraction and semantic retrieval for Codex.",
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/spiros/.pyenv/versions/3.13.0/bin/python3 /Users/spiros/.codex/hooks/logseq_memory_codex.py enqueue",
+            "timeout": 3,
+            "statusMessage": "Saving reusable task memory"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/spiros/.pyenv/versions/3.13.0/bin/python3 /Users/spiros/.codex/hooks/logseq_memory_retriever.py",
+            "timeout": 10,
+            "statusMessage": "Searching Logseq memory",
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

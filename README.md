@@ -1,6 +1,8 @@
 # logseq-memory-extractor
 
-A Claude Code hook framework that gives Claude persistent, semantic memory across sessions via a Logseq vault. Three scripts work together:
+A shared Claude Code and Codex framework that provides persistent, semantic
+memory through one Logseq vault. Claude's established page and deduplication
+contracts are reused by Codex and protected by regression tests.
 
 | Script | Hook | Role |
 |--------|------|------|
@@ -8,6 +10,8 @@ A Claude Code hook framework that gives Claude persistent, semantic memory acros
 | `logseq_memory_index.py` | (one-time CLI) | Builds the semantic search index over all vault files |
 | `logseq_memory_retriever.py` | UserPromptSubmit | Retrieves the most relevant vault pages for each new prompt |
 | `logseq_memory_mcp.py` | MCP server | On-demand search, read, and write access mid-conversation |
+| `logseq_memory_shared.py` | Shared library | Frozen prompt, transcript, rendering, dedup, index, digest, and write-lock behavior |
+| `logseq_memory_codex.py` | Codex SessionEnd | Queues and processes Codex task extraction |
 
 ## How it works
 
@@ -32,7 +36,44 @@ Mid-conversation (optional MCP server)
     → Returns the most relevant pages for the current subtopic
   → Claude calls write_insight to capture a learning immediately
     → Page written to vault without waiting for session end
+
+Codex task ends
+  → SessionEnd snapshots the filtered task transcript and original models
+  → Detached ephemeral gpt-5.6-terra worker extracts structured insights
+  → Shared Claude-compatible writer saves pages with creator:: codex
+  → $extract-memory writes individual Codex insights on demand
 ```
+
+## Codex setup
+
+Copy `logseq_memory_codex.py`, `logseq_memory_shared.py`,
+`logseq_memory_retriever.py`, and `codex_extraction_schema.json` into
+`~/.codex/hooks/`. Copy `codex/hooks.json` to `~/.codex/hooks.json` and copy
+`codex/skills/extract-memory/` to `~/.codex/skills/extract-memory/`.
+
+Enable lifecycle hooks in `~/.codex/config.toml`:
+
+```toml
+[features]
+hooks = true
+```
+
+Register the shared MCP server using the configuration below, restart Codex,
+then use `/hooks` to review and trust the hook definitions. `SessionEnd` runs
+when an open task is archived or deleted, when Codex closes normally, or after
+an unopened task has been idle for 30 minutes. Switching tasks alone does not
+end the session.
+
+Codex pages use the existing `Session YYYY-MM-DD <id> — <project>` naming and
+carry explicit provenance:
+
+```text
+creator:: codex
+model:: gpt-5.6-sol
+```
+
+The Terra extraction worker is not included in `model::` unless it participated
+in the original user-facing task.
 
 ## Prerequisites
 
@@ -43,11 +84,11 @@ Mid-conversation (optional MCP server)
 
 ## Installation
 
-### 1. Copy the scripts
+### 1. Copy the Claude scripts
 
 ```sh
 mkdir -p ~/.claude/hooks
-for script in logseq_memory_extractor logseq_memory_index logseq_memory_retriever logseq_memory_mcp; do
+for script in logseq_memory_shared logseq_memory_extractor logseq_memory_index logseq_memory_retriever logseq_memory_mcp; do
   curl -o ~/.claude/hooks/${script}.py \
     https://raw.githubusercontent.com/svathis-vgs/logseq-memory-extractor/main/${script}.py
 done
@@ -139,7 +180,8 @@ HF_DATASETS_OFFLINE = "1"
 
 Replace the python path with the output of the command above. The `TRANSFORMERS_OFFLINE` flags prevent the embedding model from trying to reach HuggingFace on startup — the model is already cached locally after the index build step.
 
-The server exposes five tools and fires macOS notifications on key events:
+The server exposes the five existing Claude tools plus one Codex-specific
+writer and fires macOS notifications on key events:
 
 | Tool | Description | Notification |
 |------|-------------|--------------|
@@ -148,6 +190,9 @@ The server exposes five tools and fires macOS notifications on key events:
 | `write_insight(type, title, summary, detail, tags, project)` | Write with compose-time sanitization and post-write verification | `✍️ write_insight — <title>` (or `⏭️` if dedup skipped) |
 | `list_recent(category, limit)` | Browse recently modified pages | — |
 | `lint_vault(category, limit)` | Scan for Logseq format violations (phantom tags, broken backticks, bad properties) | `🔍 lint_vault — N files with issues` |
+| `write_codex_insight(type, title, summary, detail, session, models, tags, project)` | Write a Codex insight with original-model provenance using the automatic Claude page contract | `✍️ write_codex_insight — <title>` (or `⏭️` if dedup skipped) |
+
+The existing `write_insight` schema and behavior remain unchanged.
 
 Restart the desktop app after editing the config for the server to appear.
 

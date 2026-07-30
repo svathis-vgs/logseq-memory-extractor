@@ -1,0 +1,50 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "patterns": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {"$ref": "#/$defs/insight"}
+    },
+    "mistakes": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {"$ref": "#/$defs/insight"}
+    },
+    "decisions": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {"$ref": "#/$defs/insight"}
+    },
+    "context": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {"$ref": "#/$defs/insight"}
+    },
+    "session_summary": {"type": "string"}
+  },
+  "required": [
+    "patterns",
+    "mistakes",
+    "decisions",
+    "context",
+    "session_summary"
+  ],
+  "$defs": {
+    "insight": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "slug": {"type": "string"},
+        "summary": {"type": "string"},
+        "detail": {"type": "string"},
+        "tags": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "required": ["slug", "summary", "detail", "tags"]
+    }
+  }
+}

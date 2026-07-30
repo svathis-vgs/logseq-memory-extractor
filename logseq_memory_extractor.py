@@ -16,39 +16,14 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import logseq_memory_shared as shared
+
 # ── Config ────────────────────────────────────────────────────────────────────
 LOGSEQ_PAGES_DIR = Path("~/VGS/Notes/pages").expanduser()
 CLAUDE_BIN = shutil.which("claude") or "/Users/spiros/.local/bin/claude"
 MAX_TRANSCRIPT_CHARS = 12_000  # ~3k tokens — keeps prompts fast via the claude CLI
 
-EXTRACTION_PROMPT = """\
-Your output MUST be a single raw JSON object. Do NOT include any prose, explanation, preamble, summary text, markdown, or code fences. Your response MUST start with `{` and end with `}`. Nothing before the opening brace. Nothing after the closing brace. If you add any text outside the JSON object the output is unusable.
-
-Analyze this Claude Code session transcript and extract reusable insights.
-Return ONLY valid JSON with this exact structure — no prose, no markdown fences:
-
-{
-  "patterns": [{"slug": "kebab-case-name", "summary": "one sentence", "detail": "reusable code approach or technique", "tags": ["tag1"]}],
-  "mistakes": [{"slug": "kebab-case-name", "summary": "one sentence", "detail": "what went wrong and how it was corrected", "tags": ["tag1"]}],
-  "decisions": [{"slug": "kebab-case-name", "summary": "one sentence", "detail": "the decision made and the reasoning behind it", "tags": ["tag1"]}],
-  "context": [{"slug": "kebab-case-name", "summary": "one sentence", "detail": "project-specific term, constraint, or fact", "tags": ["tag1"]}],
-  "session_summary": "2-3 sentence overview of what was accomplished"
-}
-
-Rules:
-- Only include items that are NON-OBVIOUS and would not be known to an experienced engineer without this session. Skip anything that is standard engineering knowledge, easily Google-able, or a generic best practice.
-- Maximum 5 items per category. Be ruthless — if you have more candidates, keep only the most surprising or project-specific ones.
-- Slugs must be lowercase kebab-case, max 6 words, no special characters
-- If a category has nothing worth capturing, use an empty array []
-- Avoid filler — empty arrays beat low-quality entries
-- For the detail field: when describing steps, actions, or any list of items,
-  put each item on its own line using Logseq outline format. Start the first
-  line with the context/intro sentence, then each item as "\\n    - item text".
-  Example: "When X happens:\\n    - First do Y\\n    - Then check Z\\n    - Finally verify W"
-  For a single-paragraph explanation with no list, a plain string is fine.
-
-Transcript:
-"""
+EXTRACTION_PROMPT = shared.extraction_prompt("Claude Code")
 
 # ── Transcript ─────────────────────────────────────────────────────────────────
 
@@ -83,88 +58,18 @@ def find_transcript(transcript_path: str | None, project_dir: str, session_id: s
 def extract_conversation_title(raw: str) -> str:
     """Return the first user message content from the JSONL transcript,
     truncated to 120 chars — this is what Claude Code shows as the session title."""
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        msg = entry.get("message", {})
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    content = block["text"]
-                    break
-            else:
-                continue
-        if isinstance(content, str) and content.strip():
-            text = content.strip().replace("\n", " ")
-            return text[:120] + ("…" if len(text) > 120 else "")
-    return ""
+    return shared.extract_conversation_title(raw)
 
 
 def extract_models(raw: str) -> list[str]:
     """Return the distinct assistant model names/versions used in this session,
     in first-seen order, from the JSONL transcript's message.model field."""
-    models: list[str] = []
-    seen: set[str] = set()
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        msg = entry.get("message", {})
-        if not isinstance(msg, dict):
-            continue
-        model = msg.get("model")
-        if isinstance(model, str) and model and model != "<synthetic>" and model not in seen:
-            seen.add(model)
-            models.append(model)
-    return models
+    return shared.extract_models(raw)
 
 
 def parse_transcript(raw: str) -> str:
     """Convert JSONL lines to readable text, keeping last MAX_TRANSCRIPT_CHARS chars."""
-    lines = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        role = entry.get("type") or entry.get("role", "")
-        msg = entry.get("message", {})
-        content = msg.get("content", "") if isinstance(msg, dict) else ""
-
-        if not content:
-            continue
-
-        prefix = "User" if role in ("user", "human") else "Assistant" if role in ("assistant",) else None
-        if prefix is None:
-            continue
-
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    lines.append(f"{prefix}: {block['text']}")
-        elif isinstance(content, str):
-            lines.append(f"{prefix}: {content}")
-
-    text = "\n".join(lines)
-    return text[-MAX_TRANSCRIPT_CHARS:] if len(text) > MAX_TRANSCRIPT_CHARS else text
+    return shared.parse_transcript(raw, MAX_TRANSCRIPT_CHARS)
 
 
 # ── Claude CLI ─────────────────────────────────────────────────────────────────
@@ -193,17 +98,7 @@ def call_claude(transcript_text: str) -> dict:
             env.pop(key, None)
 
     # JSON Schema enforces structured output at the API level — model cannot return prose.
-    schema = json.dumps({
-        "type": "object",
-        "properties": {
-            "patterns":  {"type": "array", "items": {"type": "object", "properties": {"slug": {"type": "string"}, "summary": {"type": "string"}, "detail": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["slug", "summary", "detail", "tags"]}},
-            "mistakes":  {"type": "array", "items": {"type": "object", "properties": {"slug": {"type": "string"}, "summary": {"type": "string"}, "detail": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["slug", "summary", "detail", "tags"]}},
-            "decisions": {"type": "array", "items": {"type": "object", "properties": {"slug": {"type": "string"}, "summary": {"type": "string"}, "detail": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["slug", "summary", "detail", "tags"]}},
-            "context":   {"type": "array", "items": {"type": "object", "properties": {"slug": {"type": "string"}, "summary": {"type": "string"}, "detail": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["slug", "summary", "detail", "tags"]}},
-            "session_summary": {"type": "string"},
-        },
-        "required": ["patterns", "mistakes", "decisions", "context", "session_summary"],
-    })
+    schema = json.dumps(shared.extraction_schema())
 
     result = subprocess.run(
         [CLAUDE_BIN, "-p", "--no-session-persistence", "--output-format", "json", "--json-schema", schema],
@@ -226,397 +121,101 @@ def call_claude(transcript_text: str) -> dict:
         detail = (result.stderr or "").strip()[:300]
         raise RuntimeError("claude CLI returned empty output" + (f" — stderr: {detail}" if detail else ""))
 
-    # --output-format json wraps the model reply.
-    # With --json-schema, structured output is in outer["structured_output"] (already a dict).
-    # Without --json-schema, the text reply is in outer["result"] (a string to parse).
-    try:
-        outer = json.loads(raw)
-        if isinstance(outer, dict):
-            if "structured_output" in outer and isinstance(outer["structured_output"], dict):
-                return outer["structured_output"]  # already parsed — return directly
-            elif "result" in outer:
-                raw = outer["result"]
-    except json.JSONDecodeError:
-        pass  # not an outer wrapper — fall through to direct parse
-
-    # Strip markdown code fences if model wrapped output in them
-    raw = re.sub(r"^```(?:json)?\n?", "", raw.strip())
-    raw = re.sub(r"\n?```$", "", raw).strip()
-
-    # Model sometimes wraps JSON in prose ("Here's what I extracted: {...}").
-    # Extract the outermost {...} block to handle that gracefully.
-    if not raw.startswith("{"):
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            raw = raw[start:end + 1]
-
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"claude CLI returned non-JSON (char {e.pos}): {raw[:120]!r}") from e
-    if not isinstance(parsed, dict):
-        # Model returned a list or other non-dict; treat as empty session
-        return {"patterns": [], "mistakes": [], "decisions": [], "context": [], "session_summary": ""}
-    return parsed
+    return shared.parse_extraction_output(raw)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def logseq_date() -> str:
     """Return today as a Logseq journal link: [[yyyy/MM/dd]]"""
-    return "[[" + date.today().strftime("%Y/%m/%d") + "]]"
+    return shared.logseq_date(date.today())
 
 
 # ── Logseq page writers ────────────────────────────────────────────────────────
 
 def _page_content(type_: str, title: str, summary: str, detail: str, tags: list,
-                  project: str, session_title: str, models: list[str] | None = None) -> str:
-    today = logseq_date()
-    tag_str = " ".join(f"[[{t}]]" for t in tags) if tags else ""
-    lines = [
-        f"title:: {title}",
-        f"type:: {type_}",
-        f"date:: {today}",
-        f"project:: [[{project}]]",
-        f"session:: [[{session_title}]]",
-        "creator:: claude",
-    ]
-    if models:
-        lines.append(f"model:: {', '.join(models)}")
-    if tag_str:
-        lines.append(f"tags:: {tag_str}")
-    # Render detail: first line gets the bullet prefix; subsequent lines (sub-bullets) pass through
-    detail_lines = detail.split("\n")
-    detail_block = [f"  - {detail_lines[0]}"] + detail_lines[1:]
-
-    lines += [
-        "",
-        "- ## Summary",
-        f"  - {summary}",
-        "",
-        "- ## Detail",
-    ] + detail_block + [""]
-    return "\n".join(lines)
+                  project: str, session_title: str, models: list[str] | None = None,
+                  creator: str = "claude") -> str:
+    return shared.page_content(
+        type_,
+        title,
+        summary,
+        detail,
+        tags,
+        project,
+        session_title,
+        models,
+        creator=creator,
+        today=date.today(),
+    )
 
 
 def _index_extract_text(path: Path) -> str:
     """Extract title + summary from a Logseq page for embedding (mirrors logseq_memory_index.py)."""
-    try:
-        lines = path.read_text(errors="replace").splitlines()
-    except OSError:
-        return ""
-    title = ""
-    summary_parts: list[str] = []
-    in_summary = False
-    for line in lines:
-        if line.startswith("title::"):
-            title = line[7:].strip()
-        elif "## Summary" in line:
-            in_summary = True
-        elif in_summary:
-            stripped = line.strip()
-            if stripped.startswith("- ##"):
-                break
-            if stripped.startswith("- "):
-                summary_parts.append(stripped[2:].strip())
-                if len(summary_parts) >= 3:
-                    break
-    return f"{title}. {' '.join(summary_parts)}".strip(". ")[:500]
+    return shared.index_extract_text(path)
 
 
 def _update_vault_index(new_paths: list[Path]) -> None:
     """Incrementally append newly written insight pages to the semantic index.
     No-op if the index hasn't been built yet or if sentence-transformers is absent."""
-    if not new_paths:
-        return
-    index_path = Path("~/.claude/vault_index.npz").expanduser()
-    if not index_path.exists():
-        return  # User must run logseq_memory_index.py first
-    try:
-        import numpy as np
-        from sentence_transformers import SentenceTransformer
-    except ImportError:
-        return
-
-    texts: list[str] = []
-    valid_paths: list[str] = []
-    for p in new_paths:
-        if not p.exists():
-            continue
-        text = _index_extract_text(p)
-        if text and len(text) > 10:
-            texts.append(text)
-            valid_paths.append(str(p))
-    if not texts:
-        return
-
-    try:
-        data = np.load(index_path, allow_pickle=True)
-        old_embeddings = data["embeddings"]
-        old_paths = list(data["paths"])
-
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        new_embeddings = model.encode(
-            texts, normalize_embeddings=True, show_progress_bar=False
-        ).astype("float32")
-
-        combined = np.vstack([old_embeddings, new_embeddings])
-        np.savez_compressed(
-            index_path,
-            embeddings=combined,
-            paths=np.array(old_paths + valid_paths),
-        )
-    except Exception as e:
-        print(f"[logseq-memory] index update skipped: {e}", file=sys.stderr)
+    shared.update_vault_index(
+        new_paths, Path("~/.claude/vault_index.npz").expanduser()
+    )
 
 
 def write_pages(insights: dict, project_name: str, session_id: str, session_slug: str, session_title: str,
-                models: list[str] | None = None) -> list[str]:
+                models: list[str] | None = None, creator: str = "claude") -> list[str]:
     """Write one page per insight. Returns list of [[namespace/links]]."""
-    written: list[str] = []
-    new_paths: list[Path] = []
-    type_map = {
-        "patterns": "[[pattern]]",
-        "mistakes": "[[mistake]]",
-        "decisions": "[[decision]]",
-        "context": "[[context]]",
-    }
-
-    for key, type_name in type_map.items():
-        items = insights.get(key, [])
-        if not isinstance(items, list):
-            continue
-        subdir = LOGSEQ_PAGES_DIR / "claude" / key
-        subdir.mkdir(parents=True, exist_ok=True)
-
-        # category prefix for filename ensures global uniqueness across subdirs
-        # e.g. patterns/pattern-use-pathlib.md, decisions/decision-use-postgres.md
-        category = key.rstrip("s")  # "patterns" → "pattern", "context" stays "context"
-
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            slug = re.sub(r"[^a-z0-9-]+", "-", item.get("slug", "untitled").lower()).strip("-")
-            filename = f"{category}-{slug}"
-            title = f"{category.title()}: {slug.replace('-', ' ').title()}"
-
-            # Skip if exact file exists OR if a file with the same 2-word slug prefix exists.
-            # The 2-word prefix check catches re-extractions of the same concept with a
-            # slightly different slug (e.g. "kafka-rebalance-storm" vs "kafka-rebalance-recovery").
-            slug_words = slug.split("-")
-            prefix_2 = "-".join(slug_words[:2]) if len(slug_words) >= 2 else slug
-            prefix_pattern = f"{category}-{prefix_2}-"
-            already_exists = any(True for _ in subdir.glob(f"{prefix_pattern}*.md"))
-
-            dest = subdir / f"{filename}.md"
-            if not dest.exists() and not already_exists:
-                content = _page_content(
-                    type_=type_name,
-                    title=title,
-                    summary=item.get("summary", ""),
-                    detail=item.get("detail", ""),
-                    tags=item.get("tags", []),
-                    project=project_name,
-                    session_title=session_title,
-                    models=models,
-                )
-                dest.write_text(content.lstrip("\n"))
-                new_paths.append(dest)
-            written.append(f"[[{title}]]")
-
-    _update_vault_index(new_paths)
-    return written
+    return shared.write_pages(
+        insights,
+        project_name,
+        session_id,
+        session_slug,
+        session_title,
+        models,
+        pages_dir=LOGSEQ_PAGES_DIR,
+        update_index_fn=_update_vault_index,
+        creator=creator,
+        today=date.today(),
+    )
 
 
-_DAYFLOW_KEYWORDS = (
-    "screenshot", "screen recording", "activity log",
-    "timeline cards", "dayflow", "screen capture",
-)
+_DAYFLOW_KEYWORDS = shared.DAYFLOW_KEYWORDS
 
 
 def _is_dayflow_session(conversation_title: str, session_summary: str) -> bool:
     """Return True if this session looks like a Dayflow screen-recording analysis."""
-    haystack = (conversation_title + " " + session_summary).lower()
-    return any(kw in haystack for kw in _DAYFLOW_KEYWORDS)
+    return shared.is_dayflow_session(conversation_title, session_summary)
 
 
 def write_session(insights: dict, project_name: str,
                   session_id: str, session_slug: str, written_links: list[str],
-                  conversation_title: str = "", models: list[str] | None = None) -> None:
-    today = logseq_date()
-    date_folder = date.today().strftime("%Y_%m_%d")
-    sessions_dir = LOGSEQ_PAGES_DIR / "claude" / "sessions" / date_folder
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-
-    session_date = today.strip("[]").replace("/", "-")  # [[2026/04/21]] → 2026-04-21
-    session_title = f"Session {session_date} {session_id} — {project_name}"
-    description = conversation_title or session_title
-    session_summary = insights.get("session_summary", "No summary generated.")
-
-    lines = [
-        f"title:: {session_title}",
-        f"description:: {description}",
-        "type:: [[session]]",
-        f"date:: {today}",
-        f"project:: [[{project_name}]]",
-        f"session:: [[{session_title}]]",
-        "creator:: claude",
-    ]
-    if models:
-        lines.append(f"model:: {', '.join(models)}")
-    lines.append("exclude-from-graph-view:: true")
-    if _is_dayflow_session(conversation_title, session_summary):
-        lines.append("tags:: [[dayflow]]")
-    lines += [
-        "",
-        "- ## Summary",
-        f"  - {session_summary}",
-        "",
-        "- ## Insights",
-    ] + [f"  - {link}" for link in written_links] + [""]
-
-    (sessions_dir / f"{session_slug}.md").write_text("\n".join(lines).lstrip("\n"))
+                  conversation_title: str = "", models: list[str] | None = None,
+                  creator: str = "claude") -> None:
+    shared.write_session(
+        insights,
+        project_name,
+        session_id,
+        session_slug,
+        written_links,
+        conversation_title,
+        models,
+        pages_dir=LOGSEQ_PAGES_DIR,
+        creator=creator,
+        today=date.today(),
+    )
 
 
 def write_digest() -> None:
     """Regenerate a plain-text digest of all insights so Claude can read it at session start."""
-    today = date.today().isoformat()
-    categories = ["patterns", "mistakes", "decisions", "context"]
-
-    all_insights: list[tuple[str, str, str, str]] = []
-
-    for cat in categories:
-        subdir = LOGSEQ_PAGES_DIR / "claude" / cat
-        if not subdir.exists():
-            continue
-        for f in subdir.glob("*.md"):
-            try:
-                text = f.read_text(errors="replace")
-            except OSError:
-                continue
-            lines = text.splitlines()
-            meta: dict[str, str] = {}
-            for line in lines:
-                if "::" in line and not line.startswith("-"):
-                    k, _, v = line.partition("::")
-                    meta[k.strip()] = v.strip()
-
-            summary = ""
-            in_summary = False
-            for line in lines:
-                stripped = line.strip()
-                if stripped == "- ## Summary":
-                    in_summary = True
-                    continue
-                if in_summary:
-                    if stripped.startswith("- ##"):
-                        break
-                    if stripped.startswith("- "):
-                        summary = stripped[2:].strip()
-                        break
-
-            date_str = meta.get("date", "").strip("[[]]").replace("/", "-")
-            title = meta.get("title", f.stem)
-            all_insights.append((date_str, cat, title, summary))
-
-    all_insights.sort(key=lambda x: x[0], reverse=True)
-
-    by_cat: dict[str, list[tuple[str, str, str]]] = {c: [] for c in categories}
-    for date_str, cat, title, summary in all_insights:
-        by_cat[cat].append((date_str, title, summary))
-
-    totals = {c: len(by_cat[c]) for c in categories}
-
-    out = [
-        "# Claude Code Memory Digest",
-        f"_Updated: {today} — "
-        f"{totals['patterns']} patterns, {totals['mistakes']} mistakes, "
-        f"{totals['decisions']} decisions, {totals['context']} context_",
-        "",
-        "Read this at session start to recall accumulated insights.",
-        "",
-    ]
-
-    MAX_PER_CAT = 15
-    prefixes = ("Pattern: ", "Mistake: ", "Decision: ", "Context: ")
-    for cat in categories:
-        items = by_cat[cat][:MAX_PER_CAT]
-        if not items:
-            continue
-        out.append(f"## {cat.title()}")
-        for date_str, title, summary in items:
-            short = title
-            for p in prefixes:
-                if title.startswith(p):
-                    short = title[len(p):]
-                    break
-            out.append(f"- **{short}** ({date_str}) — {summary}")
-        out.append("")
-
-    digest_path = LOGSEQ_PAGES_DIR / "claude" / "digest.md"
-    digest_path.write_text("\n".join(out))
+    shared.write_digest(LOGSEQ_PAGES_DIR, date.today())
 
 
 def update_index() -> None:
     """Keep the index fresh by updating its updated:: date. Sessions and
     insights are discovered automatically via Logseq queries — no manual
     listing needed."""
-    today = logseq_date()
-    index_path = LOGSEQ_PAGES_DIR / "claude" / "index.md"
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if not index_path.exists():
-        index_path.write_text("\n".join([
-            f"updated:: {today}",
-            "",
-            "- # Claude Code Memory Index",
-            "  - Auto-generated. Add your own notes below the query sections.",
-            "",
-            "- ## Sessions",
-            "  - {{query (property type [[session]])}}",
-            "    query-table:: true",
-            "    query-sort-by:: date",
-            "    query-sort-desc:: true",
-            "    query-properties:: [:title :date :project]",
-            "",
-            "- ## Patterns",
-            "  collapsed:: true",
-            "  - {{query (property type [[pattern]])}}",
-            "    query-table:: true",
-            "    query-sort-by:: date",
-            "    query-sort-desc:: true",
-            "    query-properties:: [:title :date :project :tags]",
-            "",
-            "- ## Mistakes",
-            "  collapsed:: true",
-            "  - {{query (property type [[mistake]])}}",
-            "    query-table:: true",
-            "    query-sort-by:: date",
-            "    query-sort-desc:: true",
-            "    query-properties:: [:title :date :project :tags]",
-            "",
-            "- ## Decisions",
-            "  collapsed:: true",
-            "  - {{query (property type [[decision]])}}",
-            "    query-table:: true",
-            "    query-sort-by:: date",
-            "    query-sort-desc:: true",
-            "    query-properties:: [:title :date :project :tags]",
-            "",
-            "- ## Context",
-            "  collapsed:: true",
-            "  - {{query (property type [[context]])}}",
-            "    query-table:: true",
-            "    query-sort-by:: date",
-            "    query-sort-desc:: true",
-            "    query-properties:: [:title :date :project :tags]",
-            "",
-        ]))
-    else:
-        existing = index_path.read_text()
-        updated = re.sub(r'^updated::.*$', f"updated:: {today}", existing, count=1, flags=re.MULTILINE)
-        index_path.write_text(updated)
+    shared.update_index(LOGSEQ_PAGES_DIR, date.today())
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -654,10 +253,26 @@ def main() -> None:
     session_slug = f"{today}-{session_short}"
     session_title = f"Session {today} {session_short} — {project_name}"
 
-    written_links = write_pages(insights, project_name, session_short, session_slug, session_title, models)
-    write_session(insights, project_name, session_short, session_slug, written_links, conversation_title, models)
-    update_index()
-    write_digest()
+    with shared.vault_lock():
+        written_links = write_pages(
+            insights,
+            project_name,
+            session_short,
+            session_slug,
+            session_title,
+            models,
+        )
+        write_session(
+            insights,
+            project_name,
+            session_short,
+            session_slug,
+            written_links,
+            conversation_title,
+            models,
+        )
+        update_index()
+        write_digest()
 
     print(
         f"[logseq-memory] {len(written_links)} insight(s) → {LOGSEQ_PAGES_DIR}/claude/",
