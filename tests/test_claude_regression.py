@@ -173,8 +173,8 @@ date:: [[2026/07/30]]
 last-updated:: [[2026/07/30]]
 project:: [[demo]]
 session:: [[Session 2026-07-30 abcdef12 — demo]]
-creator:: claude
-model:: claude-sonnet-4-6, claude-opus-4-7
+creator:: [[claude]]
+model:: [[claude-sonnet-4-6]], [[claude-opus-4-7]]
 tags:: [[incident]] [[retry]]
 
 - ## Summary
@@ -251,8 +251,8 @@ date:: [[2026/07/30]]
 last-updated:: [[2026/07/30]]
 project:: [[demo]]
 session:: [[Session 2026-07-30 abcdef12 — demo]]
-creator:: claude
-model:: claude-sonnet-4-6
+creator:: [[claude]]
+model:: [[claude-sonnet-4-6]]
 exclude-from-graph-view:: true
 
 - ## Summary
@@ -341,7 +341,10 @@ class AdjacentClaudeComponentTests(unittest.TestCase):
             self.assertTrue(result.startswith("Written: "))
             path = next((pages / "claude" / "decisions").glob("*.md"))
             content = path.read_text()
-            self.assertIn("creator:: claude\nmodel:: claude-sonnet-4-6\n", content)
+            self.assertIn(
+                "creator:: [[claude]]\nmodel:: [[claude-sonnet-4-6]]\n",
+                content,
+            )
             self.assertIn("last-updated:: [[2026/07/30]]", content)
             self.assertIn("  - It captures the final task.\n    - Keep provenance\n", content)
 

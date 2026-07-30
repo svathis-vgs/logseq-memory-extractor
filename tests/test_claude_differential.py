@@ -42,7 +42,15 @@ def snapshot_tree(root: Path) -> dict[str, bytes]:
     }
 
 
-def with_last_updated(tree: dict[str, bytes]) -> dict[str, bytes]:
+def linked_values(value: bytes) -> bytes:
+    values = [part.strip() for part in value.split(b",") if part.strip()]
+    return b", ".join(
+        item if item.startswith(b"[[") and item.endswith(b"]]") else b"[[" + item + b"]]"
+        for item in values
+    )
+
+
+def current_tree_from_baseline(tree: dict[str, bytes]) -> dict[str, bytes]:
     expected = {}
     page_roots = (
         "claude/patterns/",
@@ -60,12 +68,19 @@ def with_last_updated(tree: dict[str, bytes]) -> dict[str, bytes]:
             if line.startswith(b"date:: "):
                 lines.insert(index + 1, b"last-updated:: " + line[len(b"date:: ") :])
                 break
+        for index, line in enumerate(lines):
+            for property_name in (b"creator:: ", b"model:: "):
+                if line.startswith(property_name):
+                    suffix = b"\n" if line.endswith(b"\n") else b""
+                    value = line[len(property_name) :].rstrip(b"\n")
+                    lines[index] = property_name + linked_values(value) + suffix
+                    break
         expected[path] = b"".join(lines)
     return expected
 
 
 class ClaudeDifferentialTests(unittest.TestCase):
-    def test_refactor_matches_frozen_baseline_except_last_updated(self):
+    def test_refactor_matches_frozen_baseline_with_authorized_properties(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             legacy = load_baseline(root)
@@ -128,7 +143,7 @@ class ClaudeDifferentialTests(unittest.TestCase):
                     module.write_digest()
 
             self.assertEqual(
-                with_last_updated(snapshot_tree(roots[0])),
+                current_tree_from_baseline(snapshot_tree(roots[0])),
                 snapshot_tree(roots[1]),
             )
 

@@ -12,6 +12,7 @@ contracts are reused by Codex and protected by regression tests.
 | `logseq_memory_mcp.py` | MCP server | On-demand search, read, and write access mid-conversation |
 | `logseq_memory_shared.py` | Shared library | Frozen prompt, transcript, rendering, dedup, index, digest, and write-lock behavior |
 | `logseq_memory_codex.py` | Codex SessionEnd | Queues and processes Codex task extraction |
+| `logseq_memory_migrate_links.py` | One-time CLI | Converts existing creator/model provenance values to Logseq page links |
 
 ## How it works
 
@@ -40,7 +41,7 @@ Mid-conversation (optional MCP server)
 Codex task ends
   → SessionEnd snapshots the filtered task transcript and original models
   → Detached ephemeral gpt-5.6-terra worker extracts structured insights
-  → Shared Claude-compatible writer saves pages with creator:: codex
+  → Shared Claude-compatible writer saves pages with creator:: [[codex]]
   → $extract-memory writes individual Codex insights on demand
 ```
 
@@ -65,7 +66,7 @@ rewriting the page, so there is currently no later update operation that changes
 
 ```sh
 mkdir -p ~/.claude/hooks
-for script in logseq_memory_shared logseq_memory_extractor logseq_memory_index logseq_memory_retriever logseq_memory_mcp; do
+for script in logseq_memory_shared logseq_memory_extractor logseq_memory_index logseq_memory_retriever logseq_memory_mcp logseq_memory_migrate_links; do
   curl -o ~/.claude/hooks/${script}.py \
     https://raw.githubusercontent.com/svathis-vgs/logseq-memory-extractor/main/${script}.py
 done
@@ -224,8 +225,8 @@ Codex pages use the existing `Session YYYY-MM-DD <id> — <project>` naming and
 carry explicit provenance:
 
 ```text
-creator:: codex
-model:: gpt-5.6-sol
+creator:: [[codex]]
+model:: [[gpt-5.6-sol]]
 ```
 
 The Terra extraction worker is not included in `model::` unless it participated
@@ -337,8 +338,8 @@ date:: [[2026/04/21]]
 last-updated:: [[2026/04/21]]
 project:: [[my-project]]
 session:: [[Session 2026-04-21 abc12345 — my-project]]
-creator:: claude
-model:: claude-sonnet-4-6
+creator:: [[claude]]
+model:: [[claude-sonnet-4-6]]
 tags:: [[python]] [[filesystem]]
 
 - ## Summary
@@ -402,6 +403,28 @@ Aim for 3–8 insights per session; never more than 15.
 After writing, report: count written, count skipped (duplicate), list of titles written.
 ```
 
+## Existing vault migration
+
+New pages write `creator::` and each ordered `model::` value as a Logseq page
+link. The identifiers themselves are preserved: for example,
+`claude-opus-4-6` becomes `[[claude-opus-4-6]]`, not a renamed display value.
+
+To preview existing-page changes from a repository checkout:
+
+```sh
+python3 logseq_memory_migrate_links.py --pages-dir /absolute/path/to/vault/pages --dry-run
+```
+
+To make the migration with rollback copies of only changed files:
+
+```sh
+python3 logseq_memory_migrate_links.py --pages-dir /absolute/path/to/vault/pages --backup-dir /absolute/path/to/provenance-links-backup
+```
+
+The migration is idempotent. It changes only `creator::` and `model::` property
+lines in Markdown files under `pages/claude/`; already linked values remain
+unchanged.
+
 **Rebuild the full index** (after vault consolidation or model change):
 
 ```sh
@@ -420,19 +443,21 @@ TRANSFORMERS_OFFLINE=1 python3 ~/.claude/hooks/logseq_memory_index.py --quiet
 
 Claude's original implementation is the compatibility specification. Commit
 `b630a63` is the frozen pre-refactor baseline used by the differential test.
-Run the same 26-test suite used by CI with:
+Run the same 29-test suite used by CI with:
 
 ```sh
 python -m unittest discover -s tests -v
 ```
 
 The differential runner compares the legacy and current implementations against
-identical temporary vaults. It permits one intentional Claude-visible change:
-the current renderer adds `last-updated::` immediately after `date::` on insight
-and session pages. After removing only that property, the resulting trees must
-remain byte-identical. Prompt bytes, extraction schema, `claude -p` invocation,
-transcript parsing, dedup decisions, session and digest contents, index input,
-diagnostics, existing MCP schemas, and all other rendered bytes remain protected.
+identical temporary vaults. It permits two intentional Claude-visible changes:
+the renderer adds `last-updated::` immediately after `date::`, and wraps
+`creator::` plus each ordered `model::` value in Logseq links on insight and
+session pages. Its expected tree applies exactly those transformations to the
+frozen baseline; all other bytes must remain identical. Prompt bytes, extraction
+schema, `claude -p` invocation, transcript parsing, dedup decisions, digest and
+index input, diagnostics, existing MCP schemas, and all other rendered bytes
+remain protected.
 
 When changing persistence behavior, add a failing regression test first and run
 the complete suite on Python 3.11 and the deployed Python 3.13 runtime. A

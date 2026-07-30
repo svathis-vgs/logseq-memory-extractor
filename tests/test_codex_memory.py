@@ -209,15 +209,15 @@ class CodexWorkerTests(TempEnvironment):
 
         page = next((self.root / "pages" / "claude" / "context").glob("*.md"))
         content = page.read_text()
-        self.assertIn("creator:: codex", content)
-        self.assertIn("model:: gpt-5.6-sol", content)
-        self.assertNotIn("model:: gpt-5.6-terra", content)
+        self.assertIn("creator:: [[codex]]", content)
+        self.assertIn("model:: [[gpt-5.6-sol]]", content)
+        self.assertNotIn("model:: [[gpt-5.6-terra]]", content)
         self.assertIn("last-updated:: [[2026/07/29]]", content)
         session = next(
             (self.root / "pages" / "claude" / "sessions").rglob("*.md")
         ).read_text()
         self.assertIn("title:: Session 2026-07-29 session- — test", session)
-        self.assertIn("creator:: codex", session)
+        self.assertIn("creator:: [[codex]]", session)
         self.assertIn("last-updated:: [[2026/07/29]]", session)
         marker = self.root / "state" / "processed" / "session-456.json"
         self.assertTrue(marker.exists())
@@ -304,8 +304,8 @@ class CodexOnDemandTests(TempEnvironment):
         pages = list((self.root / "pages" / "claude" / "decisions").glob("*.md"))
         self.assertEqual(len(pages), 1)
         content = pages[0].read_text()
-        self.assertIn("creator:: codex", content)
-        self.assertIn("model:: gpt-5.6-sol", content)
+        self.assertIn("creator:: [[codex]]", content)
+        self.assertIn("model:: [[gpt-5.6-sol]]", content)
         self.assertIn(f"session:: [[{session}]]", content)
         self.assertIn(
             "  - It captures task exit.\n    - Keep the original model\n",

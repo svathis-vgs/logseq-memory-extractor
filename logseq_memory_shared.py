@@ -244,6 +244,17 @@ def logseq_date(today: date | None = None) -> str:
     return "[[" + value.strftime("%Y/%m/%d") + "]]"
 
 
+def logseq_link(value: str) -> str:
+    text = str(value).strip()
+    if text.startswith("[[") and text.endswith("]]"):
+        return text
+    return f"[[{text}]]"
+
+
+def logseq_links(values: list[str]) -> str:
+    return ", ".join(logseq_link(value) for value in values if str(value).strip())
+
+
 def page_content(
     type_: str,
     title: str,
@@ -266,10 +277,10 @@ def page_content(
         f"last-updated:: {today_text}",
         f"project:: [[{project}]]",
         f"session:: [[{session_title}]]",
-        f"creator:: {creator}",
+        f"creator:: {logseq_link(creator)}",
     ]
     if models:
-        lines.append(f"model:: {', '.join(models)}")
+        lines.append(f"model:: {logseq_links(models)}")
     if tag_str:
         lines.append(f"tags:: {tag_str}")
     detail_lines = detail.split("\n")
@@ -438,10 +449,10 @@ def write_session(
         f"last-updated:: {today_text}",
         f"project:: [[{project_name}]]",
         f"session:: [[{session_title}]]",
-        f"creator:: {creator}",
+        f"creator:: {logseq_link(creator)}",
     ]
     if models:
-        lines.append(f"model:: {', '.join(models)}")
+        lines.append(f"model:: {logseq_links(models)}")
     lines.append("exclude-from-graph-view:: true")
     if is_dayflow_session(conversation_title, session_summary):
         lines.append("tags:: [[dayflow]]")
