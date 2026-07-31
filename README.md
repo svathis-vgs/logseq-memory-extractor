@@ -257,6 +257,30 @@ writer and fires macOS notifications on key events:
 
 The existing `write_insight` schema and behavior remain unchanged.
 
+## Usage
+
+### Codex
+
+With lifecycle hooks enabled, Codex automatically searches the shared vault
+before handling each user prompt. The `UserPromptSubmit` retriever ignores
+prompts shorter than 15 characters, embeds eligible prompts with
+`all-MiniLM-L6-v2`, and injects up to five matches at or above 0.38 cosine
+similarity into the next model context as a system reminder.
+
+Retrieval silently produces no injected context when the index or embedding
+dependencies are unavailable, the manual disable flag
+`~/.claude/vault_retriever_disabled` exists, or no page clears the similarity
+threshold. It never interrupts the task.
+
+Codex can also use `search_vault` and `read_page` through MCP whenever the
+topic changes or prior context may help. The `$extract-memory` skill searches
+for each candidate insight before calling `write_codex_insight`; the shared
+two-word deduplication check remains the final race-safe guard.
+
+`SessionEnd` does not query the vault. It filters and queues the completed task
+transcript, then a detached worker extracts new insights and persists them with
+Codex provenance.
+
 ## Retrieval behaviour
 
 The `UserPromptSubmit` hook fires before every user message. It:
