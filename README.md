@@ -335,6 +335,8 @@ input, which is derived from the page title and summary.
 
 Run periodically or after bulk imports to catch format issues before they create phantom pages in Logseq.
 
+`limit` only caps how many findings are *returned* — the scan itself always covers every file in scope, so `scanned` and `findings_count` are always the true totals. (Earlier versions stopped scanning as soon as `limit` findings were hit, silently leaving the rest of the vault unchecked while still reporting a `scanned` count that looked complete.) A response with more findings than `limit` says so and tells you to raise it.
+
 ## Vault structure
 
 ```

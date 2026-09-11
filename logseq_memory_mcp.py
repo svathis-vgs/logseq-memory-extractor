@@ -289,12 +289,17 @@ def _lint_vault(category: str | None, limit: int) -> list[dict]:
                     "name": p.name,
                     "issues": issues,
                 })
-                if len(findings) >= limit:
-                    break
-        if len(findings) >= limit:
-            break
+            # No early break on `limit` — that used to stop the scan itself,
+            # not just the reported list, so a low limit silently left most
+            # of the vault unchecked while `scanned` looked like a full count.
+            # Always scan everything in scope; only the returned list is capped.
 
-    return [{"scanned": scanned, "findings_count": len(findings), "findings": findings}]
+    return [{
+        "scanned": scanned,
+        "findings_count": len(findings),
+        "findings": findings[:limit],
+        "truncated": len(findings) > limit,
+    }]
 
 
 def _write_insight_unlocked(
@@ -664,7 +669,13 @@ async def serve() -> None:
                         "limit": {
                             "type": "integer",
                             "default": 50,
-                            "description": "Maximum number of files with issues to return",
+                            "description": (
+                                "Maximum number of files with issues to include in the "
+                                "response. The scan itself always covers every file in "
+                                "scope regardless of this value — only the returned list "
+                                "is capped, so `scanned`/`findings_count` are always the "
+                                "true totals, not truncated by a low limit."
+                            ),
                         },
                     },
                 },
@@ -823,6 +834,11 @@ async def serve() -> None:
                         lines.append(f"**{f['name']}**")
                         for issue in f["issues"]:
                             lines.append(f"  - {issue}")
+                    if info["truncated"]:
+                        lines.append(
+                            f"\n…showing {len(info['findings'])} of {info['findings_count']} — "
+                            "raise `limit` to see the rest."
+                        )
                     text = "\n".join(lines)
             _notify("🔍 Logseq Vault", f"lint_vault — {results[0].get('findings_count', '?')} files with issues")
             return [types.TextContent(type="text", text=text)]
