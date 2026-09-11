@@ -250,12 +250,10 @@ writer and fires macOS notifications on key events:
 |------|-------------|--------------|
 | `search_vault(query, top_k, category)` | Semantic search with staleness labels (fresh/aging/stale/abandoned) | `🔍 search_vault — N match(es)` |
 | `read_page(path)` | Read a vault page returned by search | — |
-| `write_insight(type, title, summary, detail, tags, project)` | Write with compose-time sanitization and post-write verification | `✍️ write_insight — <title>` (or `⏭️` if dedup skipped) |
+| `write_insight(type, title, summary, detail, tags, project, force)` | Write with compose-time sanitization, post-write verification, and a same-session burst guard (see [Accumulation controls](#accumulation-controls)) | `✍️ write_insight — <title>` (or `⏭️` if dedup/burst-held) |
 | `list_recent(category, limit)` | Browse recently modified pages | — |
 | `lint_vault(category, limit)` | Scan for Logseq format violations (phantom tags, broken backticks, bad properties) | `🔍 lint_vault — N files with issues` |
 | `write_codex_insight(type, title, summary, detail, session, models, tags, project)` | Write a Codex insight with original-model provenance using the automatic Claude page contract | `✍️ write_codex_insight — <title>` (or `⏭️` if dedup skipped) |
-
-The existing `write_insight` schema and behavior remain unchanged.
 
 ## Usage
 
@@ -298,9 +296,15 @@ The MCP server complements this with on-demand targeted queries mid-conversation
 
 ## Accumulation controls
 
-Two settings in `logseq_memory_extractor.py` keep the vault from growing unbounded:
+Five settings, mostly in `logseq_memory_shared.py`, keep the vault from growing unbounded:
 
 **Extraction prompt** — instructs the extractor to only capture non-obvious, project-specific insights (max 5 per category per session). Empirically cuts the daily accumulation rate from ~330 to ~140 files/day.
+
+**Extraction schema cap** — `extraction_schema()` declares `maxItems: 5` on each category array, enforced at the structured-output API level rather than left as a prompt instruction the model can silently exceed. Added after a single Stop hook extraction call produced 20 files in one category on an eventful session — the prompt asked for at most 5 but nothing stopped the model from returning more.
+
+**write_pages hard truncate** — `write_pages()` additionally truncates each category's insight list to 5 items before writing, independent of the schema cap. No caller (Stop hook or `write_codex_insight`) can write more than 5 files per category in one call, regardless of what upstream extraction returns.
+
+**write_insight burst guard** — the MCP server's `write_insight` tool tracks how many entries the current session has already written to a category (matching the `session::` property via `find_session_entries()`) and holds the write past 5, suggesting the caller consolidate into one entry instead; pass `force: true` to write anyway. Covers the interactive, one-insight-at-a-time path that the schema cap and hard truncate — both scoped to a single batch call — don't reach.
 
 **Slug near-match dedup** — before writing a new file, checks whether a file with the same 2-word slug prefix already exists in the category subdirectory. Prevents same-concept files with different trailing words from accumulating (e.g. `kafka-rebalance-storm` blocks `kafka-rebalance-recovery`).
 

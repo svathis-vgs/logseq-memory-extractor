@@ -26,6 +26,7 @@ TYPE_MAP = {
     "decisions": "[[decision]]",
     "context": "[[context]]",
 }
+MAX_ITEMS_PER_CATEGORY = 5
 DAYFLOW_KEYWORDS = (
     "screenshot",
     "screen recording",
@@ -77,8 +78,14 @@ def extraction_prompt(source_name: str = "Claude Code") -> str:
 
 
 def extraction_schema() -> dict:
+    # maxItems enforces the prompt's "Maximum 5 items per category" rule at the
+    # API/structured-output level. The prompt instruction alone is a request the
+    # model can silently exceed on a long, eventful session — a single Stop hook
+    # extraction call once produced 20 decision-category files that way, burying
+    # the digest's recent-decisions slot under one session's play-by-play.
     insight = {
         "type": "array",
+        "maxItems": MAX_ITEMS_PER_CATEGORY,
         "items": {
             "type": "object",
             "properties": {
@@ -378,6 +385,13 @@ def write_pages(
         items = insights.get(key, [])
         if not isinstance(items, list):
             continue
+        # Hard cap independent of extraction_schema()'s maxItems — a single
+        # write_pages() call (Stop hook or write_codex_insight) must never
+        # explode one category's worth of one session into more files than
+        # the digest can show without one session's play-by-play crowding
+        # out everything else recent in that category.
+        if len(items) > MAX_ITEMS_PER_CATEGORY:
+            items = items[:MAX_ITEMS_PER_CATEGORY]
         subdir = pages_dir / "claude" / key
         subdir.mkdir(parents=True, exist_ok=True)
         category = key.rstrip("s")
@@ -598,6 +612,28 @@ def update_index(pages_dir: Path, today: date | None = None) -> None:
             flags=re.MULTILINE,
         )
         path.write_text(updated)
+
+
+def find_session_entries(subdir: Path, session_marker: str) -> list[Path]:
+    """Return existing pages in subdir whose session:: property references session_marker.
+
+    session_marker is the raw session title (e.g. "Session 2026-09-10 9ce26f0e —
+    buzzer-worker-webhook"), not yet wrapped in [[ ]] — matched against the
+    session:: line as written by page_content()/write_session().
+    """
+    if not subdir.exists():
+        return []
+    marker = session_marker if session_marker.startswith("[[") else f"[[{session_marker}]]"
+    matches: list[Path] = []
+    for path in sorted(subdir.glob("*.md")):
+        try:
+            for line in path.read_text(errors="replace").splitlines()[:10]:
+                if line.startswith("session::") and marker in line:
+                    matches.append(path)
+                    break
+        except OSError:
+            continue
+    return matches
 
 
 def default_lock_path() -> Path:

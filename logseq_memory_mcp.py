@@ -54,6 +54,12 @@ MIN_SCORE = 0.38
 MAX_FILE_CHARS = 1500
 CATEGORIES = {"patterns", "mistakes", "decisions", "context"}
 STALENESS_DAYS = {"fresh": 7, "aging": 14, "stale": 30}
+# One above the Stop hook's own per-category extraction cap (5) — past this,
+# a single session's manual write_insight calls have out-produced what a full
+# end-of-session batch extraction would ever generate for one category, and
+# each further granular file crowds the digest's recency slots for that
+# category. Force a consolidation pause instead of silently piling on.
+BURST_THRESHOLD = 5
 
 _TYPE_LABEL = {
     "patterns":  "Pattern",
@@ -300,6 +306,7 @@ def _write_insight_unlocked(
     tags: list[str] | None = None,
     project: str | None = None,
     session: str | None = None,
+    force: bool = False,
 ) -> str:
     if insight_type not in CATEGORIES:
         return f"Invalid type '{insight_type}'. Must be one of: {', '.join(sorted(CATEGORIES))}"
@@ -308,6 +315,7 @@ def _write_insight_unlocked(
     slug = _make_slug(title)
     subdir = LOGSEQ_PAGES_DIR / "claude" / insight_type
     subdir.mkdir(parents=True, exist_ok=True)
+    session_str = session or f"Session {datetime.now().strftime('%Y-%m-%d')} — manual"
 
     # Near-match dedup: exact slug match always blocks; prefix match needs
     # ≥3 slug segments to avoid false positives (e.g. "access-logger" matching
@@ -320,11 +328,28 @@ def _write_insight_unlocked(
     if existing:
         return f"Skipped — similar page already exists: {existing[0].name}"
 
+    # Burst guard: this session has already written BURST_THRESHOLD+ separate
+    # entries to this category. Adding another narrow one silently would just
+    # crowd the digest with one session's play-by-play — push back and ask for
+    # a consolidated entry instead, unless the caller explicitly forces it.
+    if not force:
+        session_files = shared.find_session_entries(subdir, session_str)
+        if len(session_files) >= BURST_THRESHOLD:
+            listing = "\n".join(f"  - {p.name}" for p in session_files)
+            return (
+                f"Held — this session already has {len(session_files)} {insight_type} "
+                f"entries (session: {session_str}):\n{listing}\n\n"
+                "Consider folding these into one consolidated entry that captures the "
+                "investigation arc (root cause → options tried → final decision), "
+                "rather than adding another narrow one — narrow entries pile up and "
+                "crowd the digest's recent-entries slot for this category. "
+                "If this is a genuinely unrelated decision, call again with force=true."
+            )
+
     filepath = subdir / f"{prefix}{slug}.md"
     today = datetime.now().strftime("%Y/%m/%d")
     tags_str = " ".join(f"[[{t}]]" for t in (tags or []))
     project_str = project or "VGS"
-    session_str = session or f"Session {datetime.now().strftime('%Y-%m-%d')} — manual"
     type_label = _TYPE_LABEL[insight_type]
 
     title_safe = _sanitize(title)
@@ -365,6 +390,7 @@ def _write_insight(
     tags: list[str] | None = None,
     project: str | None = None,
     session: str | None = None,
+    force: bool = False,
 ) -> str:
     """Preserve the existing Claude MCP writer while serializing vault writes."""
     with shared.vault_lock():
@@ -377,6 +403,7 @@ def _write_insight(
             tags,
             project,
             session,
+            force,
         )
 
 
@@ -585,6 +612,17 @@ async def serve() -> None:
                                 "(e.g. 'claude-opus-4-6'), so the page records what wrote it."
                             ),
                         },
+                        "force": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Bypass the burst guard. Once this session has already "
+                                "written 5+ entries to the same category, the tool holds "
+                                "further writes and asks you to consolidate them into one "
+                                "entry instead — pass force=true only when this really is "
+                                "a distinct, unrelated insight."
+                            ),
+                        },
                     },
                     "required": ["type", "title", "summary", "detail", "model"],
                 },
@@ -727,8 +765,9 @@ async def serve() -> None:
                 model=arguments["model"],
                 tags=arguments.get("tags"),
                 project=arguments.get("project"),
+                force=bool(arguments.get("force", False)),
             )
-            skipped = result.startswith("Skipped")
+            skipped = result.startswith("Skipped") or result.startswith("Held")
             icon = "⏭️" if skipped else "✍️"
             _notify(f"{icon} Logseq Vault", f"write_insight — {arguments['title'][:50]}")
             return [types.TextContent(type="text", text=result)]
