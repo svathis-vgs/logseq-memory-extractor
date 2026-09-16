@@ -321,10 +321,12 @@ duplicates, so `last-updated::` changes only if a future page-update operation
 explicitly refreshes it. The property is not part of semantic-index embedding
 input, which is derived from the page title and summary.
 
-**Compose-time sanitization** — `write_insight` sanitizes content before writing:
-- Escapes bare `#digits` → `` `#1` `` (prevents phantom Logseq tag pages)
+**Compose-time sanitization** — `logseq_memory_shared.sanitize()` is the single implementation both write paths call before content ever reaches disk: `page_content()` (Stop hook auto-extraction and `write_codex_insight`, together the dominant source of vault growth) and `write_insight` (interactive mid-session writes, via a thin `_sanitize()` delegate in `logseq_memory_mcp.py`). It:
+- Escapes bare `#digits` → `` `#3219` `` (prevents phantom Logseq tag pages) — matches the *whole* digit run, not just the first digit, and safely wraps a reference that's already inside a markdown link (`[#894](url)` → `[`#894`](url)`) without breaking the hyperlink
 - Escapes `{{ }}` macros → backtick-wrapped (prevents broken Logseq macros)
 - Post-write verification re-reads the file and checks for odd backtick counts, surviving bare `#digits`, unescaped macros, and single-colon properties
+
+Before this was unified, `page_content()` didn't sanitize at all — every Stop hook extraction wrote titles/summaries/details raw, so any session whose insight happened to mention "PR #158" reintroduced the phantom-tag risk regardless of how many times the vault had been lint-cleaned. `write_insight`'s own sanitizer also had a `#(\d)` (single-digit-only) regex bug that broke multi-digit references (`#3219` → `` `#3`219 ``) instead of escaping them cleanly.
 
 **Lint tool** — `lint_vault` scans all vault files (or a single category) for format violations:
 - Odd backtick count (unclosed inline code)

@@ -200,10 +200,13 @@ def _format_detail(detail: str) -> str:
 
 
 def _sanitize(text: str) -> str:
-    """Sanitize text for Logseq round-trip safety."""
-    text = re.sub(r'(?<!\`)#(\d)', r'`#\1`', text)
-    text = text.replace("{{", "`{{").replace("}}", "}}`")
-    return text
+    """Sanitize text for Logseq round-trip safety.
+
+    Delegates to the shared implementation so the interactive write_insight
+    path and the Stop hook's page_content() path can't drift apart again —
+    this used to be a local copy with a `#(\\d)` (single-digit) regex bug.
+    """
+    return shared.sanitize(text)
 
 
 def _strip_backtick_spans(line: str) -> str:

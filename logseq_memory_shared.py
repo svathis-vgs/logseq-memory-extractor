@@ -262,6 +262,21 @@ def logseq_links(values: list[str]) -> str:
     return ", ".join(logseq_link(value) for value in values if str(value).strip())
 
 
+def sanitize(text: str) -> str:
+    """Escape text for Logseq round-trip safety before it goes into a page.
+
+    Backtick-wraps bare `#123`-style references (PR/ticket numbers) so Logseq
+    doesn't parse them as tag links to a phantom "#123" page, and escapes
+    `{{ }}` so it isn't parsed as a query/macro block. The digit run is
+    matched greedily (`\\d+`, not `\\d`) — matching only the first digit
+    would leave the rest of a multi-digit number (e.g. `#3219`) outside the
+    backticks and visibly broken.
+    """
+    text = re.sub(r"(?<!`)#(\d+)", r"`#\1`", text)
+    text = text.replace("{{", "`{{").replace("}}", "}}`")
+    return text
+
+
 def page_content(
     type_: str,
     title: str,
@@ -276,6 +291,9 @@ def page_content(
     today: date | None = None,
 ) -> str:
     today_text = logseq_date(today)
+    title = sanitize(title)
+    summary = sanitize(summary)
+    detail = sanitize(detail)
     tag_str = " ".join(f"[[{tag}]]" for tag in tags) if tags else ""
     lines = [
         f"title:: {title}",
