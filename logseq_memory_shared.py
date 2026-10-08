@@ -294,7 +294,7 @@ def page_content(
     title = sanitize(title)
     summary = sanitize(summary)
     detail = sanitize(detail)
-    tag_str = " ".join(f"[[{tag}]]" for tag in tags) if tags else ""
+    tag_str = ", ".join(f"[[{tag}]]" for tag in tags) if tags else ""
     lines = [
         f"title:: {title}",
         f"type:: {type_}",

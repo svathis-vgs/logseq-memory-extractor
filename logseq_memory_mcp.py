@@ -356,7 +356,7 @@ def _write_insight_unlocked(
 
     filepath = subdir / f"{prefix}{slug}.md"
     today = datetime.now().strftime("%Y/%m/%d")
-    tags_str = " ".join(f"[[{t}]]" for t in (tags or []))
+    tags_str = ", ".join(f"[[{t}]]" for t in (tags or []))
     project_str = project or "VGS"
     type_label = _TYPE_LABEL[insight_type]
 

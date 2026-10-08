@@ -175,7 +175,7 @@ project:: [[demo]]
 session:: [[Session 2026-07-30 abcdef12 — demo]]
 creator:: [[claude]]
 model:: [[claude-sonnet-4-6]], [[claude-opus-4-7]]
-tags:: [[incident]] [[retry]]
+tags:: [[incident]], [[retry]]
 
 - ## Summary
   - Retry only after verification.
