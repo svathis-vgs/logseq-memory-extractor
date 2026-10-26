@@ -148,5 +148,78 @@ class ModelCacheTests(unittest.TestCase):
         self.assertTrue(shared.model_is_cached())
 
 
+class RunLogTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.patch = mock.patch.object(shared, "MEMORY_HOME", self.home)
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def test_appends_one_line_per_run(self):
+        shared.log_run("claude", "failed", "claude CLI exited with code 1:\n OAuth expired")
+        shared.log_run("codex", "ok", "session=abc")
+        lines = (self.home / "extractor.log").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertRegex(lines[0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d claude failed claude CLI exited with code 1: OAuth expired$")
+        self.assertTrue(lines[1].endswith("codex ok session=abc"))
+
+    def test_trims_itself(self):
+        with mock.patch.object(shared, "RUN_LOG_MAX_BYTES", 2000):
+            for i in range(200):
+                shared.log_run("claude", "ok", f"run {i}")
+        text = (self.home / "extractor.log").read_text(encoding="utf-8")
+        self.assertLess(len(text), 2100)
+        self.assertTrue(text.rstrip().endswith("run 199"))
+        first = text.split("\n", 1)[0]
+        self.assertRegex(first, r"^\d{4}-\d\d-\d\dT")  # trimmed at a line boundary
+
+    def test_never_raises(self):
+        with mock.patch.object(shared, "MEMORY_HOME", self.home / "file"):
+            (self.home / "file").write_text("not a dir", encoding="utf-8")
+            shared.log_run("claude", "ok")
+
+
+class ExtractorRunLogTests(unittest.TestCase):
+    def setUp(self):
+        import logseq_memory_extractor as extractor
+        self.extractor = extractor
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.patch = mock.patch.object(shared, "MEMORY_HOME", self.home)
+        self.patch.start()
+        os.environ.pop("LOGSEQ_EXTRACTOR_RUNNING", None)
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def log(self):
+        return (self.home / "extractor.log").read_text(encoding="utf-8")
+
+    def test_cli_failure_is_logged_with_stdout_detail(self):
+        failed = mock.Mock(returncode=1, stderr="",
+                           stdout='{"is_error":true,"result":"OAuth session expired"}')
+        with mock.patch.object(self.extractor, "find_transcript", return_value="x" * 10), \
+                mock.patch.object(self.extractor, "parse_transcript", return_value="y" * 300), \
+                mock.patch.object(self.extractor.subprocess, "run", return_value=failed), \
+                mock.patch("sys.stdin", mock.Mock(read=lambda: '{"session_id": "abcdef123"}')):
+            with self.assertRaises(SystemExit):
+                self.extractor.main()
+        self.assertIn("claude failed session=abcdef12 claude CLI exited with code 1", self.log())
+        self.assertIn("code 1: OAuth session expired", self.log())
+        self.assertNotIn("is_error", self.log())
+
+    def test_unexpected_error_is_logged_and_reraised(self):
+        with mock.patch.object(self.extractor, "find_transcript", side_effect=KeyError("boom")), \
+                mock.patch("sys.stdin", mock.Mock(read=lambda: "{}")):
+            with self.assertRaises(KeyError):
+                self.extractor.main()
+        self.assertRegex(self.log(), r"claude error KeyError: 'boom' \(at \S+\.py:\d+\)")
+
+
 if __name__ == "__main__":
     unittest.main()

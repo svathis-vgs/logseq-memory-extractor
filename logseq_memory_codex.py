@@ -437,6 +437,7 @@ def process_job(queue_path: Path) -> int:
             },
         )
         running_path.unlink(missing_ok=True)
+        shared.log_run("codex", "ok", f"session={str(job.get('session_id', ''))[:8]} project={job.get('project')}")
         return 0
     except Exception as exc:
         _atomic_json(
@@ -450,6 +451,7 @@ def process_job(queue_path: Path) -> int:
         )
         running_path.unlink(missing_ok=True)
         print(f"[logseq-codex] extraction failed: {exc}", file=sys.stderr)
+        shared.log_run("codex", "failed", f"session={str(job.get('session_id', ''))[:8]} {exc}")
         return 1
 
 

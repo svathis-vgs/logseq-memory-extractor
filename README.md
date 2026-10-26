@@ -75,6 +75,7 @@ the shared scripts.
 ├── config.json           ← {"pages_dir": ...} written by the installer
 ├── vault_index.npz       ← shared semantic index
 ├── vault_index.lock      ← shared write lock
+├── extractor.log         ← one line per Claude/Codex extraction run (ok / failed / error)
 ├── backups/<timestamp>/  ← copies of config files the installer edited
 └── retriever_disabled    ← optional: create to pause prompt retrieval
 ```
@@ -601,7 +602,7 @@ subsequent index updates do not require a restart.
 
 Claude's original implementation is the compatibility specification. Commit
 `b630a63` is the frozen pre-refactor baseline used by the differential test.
-Run the suite used by CI (84 tests; the 13 that need numpy are skipped
+Run the suite used by CI (89 tests; the 13 that need numpy are skipped
 when it is not installed) with the command below. CI installs `numpy` and `mcp`
 on Ubuntu, macOS and Windows (Python 3.11 and 3.13), plus one Ubuntu job
 without them to keep the stdlib-only, fail-open path covered:

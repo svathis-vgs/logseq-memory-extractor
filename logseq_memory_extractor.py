@@ -115,7 +115,12 @@ def call_claude(transcript_text: str) -> dict:
     )
 
     if result.returncode != 0:
-        detail = (result.stderr or "").strip()[:300]
+        # With --output-format json the CLI reports errors (e.g. an expired
+        # login) in stdout, not stderr; keep both.
+        detail = " | ".join(
+            part for part in ((result.stderr or "").strip()[:300], _cli_error_text(result.stdout))
+            if part
+        )
         raise RuntimeError(f"claude CLI exited with code {result.returncode}" + (f": {detail}" if detail else ""))
 
     raw = result.stdout.strip()
@@ -126,6 +131,25 @@ def call_claude(transcript_text: str) -> dict:
         raise RuntimeError("claude CLI returned empty output" + (f" — stderr: {detail}" if detail else ""))
 
     return shared.parse_extraction_output(raw)
+
+
+def _cli_error_text(stdout: str | None) -> str:
+    """The human-readable part of a failed `claude -p --output-format json` run.
+
+    The CLI reports failures as a JSON result object whose message sits in
+    "result" (or "error"/"message"); fall back to the raw text.
+    """
+    text = (stdout or "").strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return text[:500]
+    if isinstance(data, dict):
+        for key in ("result", "error", "message"):
+            value = data.get(key)
+            if value:
+                return str(value)[:500]
+    return text[:500]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -228,7 +252,20 @@ def main() -> None:
     # When that happens, LOGSEQ_EXTRACTOR_RUNNING is set in its environment — exit immediately.
     if os.environ.get("LOGSEQ_EXTRACTOR_RUNNING"):
         sys.exit(0)
+    try:
+        _run()
+    except SystemExit:
+        raise
+    except BaseException as exc:  # hook stderr is discarded: record it, then fail
+        import traceback
 
+        where = traceback.extract_tb(exc.__traceback__)[-1]
+        shared.log_run("claude", "error",
+                       f"{type(exc).__name__}: {exc} (at {Path(where.filename).name}:{where.lineno})")
+        raise
+
+
+def _run() -> None:
     payload = json.loads(sys.stdin.read() or "{}")
     session_id = payload.get("session_id", "unknown")
     project_dir = payload.get("cwd") or payload.get("project_dir") or os.getcwd()
@@ -248,6 +285,7 @@ def main() -> None:
         insights = call_claude(transcript_text)
     except Exception as e:
         print(f"[logseq-memory] extraction failed: {e}", file=sys.stderr)
+        shared.log_run("claude", "failed", f"session={session_id[:8]} {e}")
         sys.exit(1)
 
     project_name = Path(project_dir).name or "unknown"
@@ -281,6 +319,7 @@ def main() -> None:
         f"[logseq-memory] {len(written_links)} insight(s) → {shared.memory_root(LOGSEQ_PAGES_DIR)}/",
         file=sys.stderr,
     )
+    shared.log_run("claude", "ok", f"session={session_short} project={project_name} insights={len(written_links)}")
 
 
 if __name__ == "__main__":

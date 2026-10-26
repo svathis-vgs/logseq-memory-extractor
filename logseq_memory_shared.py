@@ -127,6 +127,38 @@ def use_offline_models() -> None:
 use_offline_models()
 
 
+RUN_LOG_MAX_BYTES = 512 * 1024
+
+
+def run_log_path() -> Path:
+    return MEMORY_HOME / "extractor.log"
+
+
+def log_run(source: str, status: str, message: str = "") -> None:
+    """Append one line per extraction run to ~/.logseq-memory/extractor.log.
+
+    Hooks run with their stderr discarded, so this is the only record that an
+    extraction ran, succeeded or failed. Never raises; trims itself to the
+    newest half once it passes RUN_LOG_MAX_BYTES.
+    """
+    from datetime import datetime
+
+    line = f"{datetime.now().isoformat(timespec='seconds')} {source} {status}"
+    if message:
+        line += " " + " ".join(str(message).split())[:2000]
+    path = run_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(line + "\n")
+        if path.stat().st_size > RUN_LOG_MAX_BYTES:
+            data = path.read_text(encoding="utf-8", errors="replace")
+            keep = data[len(data) // 2:]
+            path.write_text(keep[keep.find("\n") + 1:], encoding="utf-8", newline="\n")
+    except OSError:
+        pass
+
+
 def find_cli(name: str) -> str:
     """Resolve an agent CLI (claude / codex) from PATH, config.json, or the
     usual install locations. GUI apps start hooks without the shell PATH."""
