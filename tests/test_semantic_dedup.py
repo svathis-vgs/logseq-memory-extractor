@@ -2,6 +2,7 @@ import os
 import re
 import tempfile
 import unittest
+import zlib
 from datetime import date
 from pathlib import Path
 from unittest import mock
@@ -29,7 +30,9 @@ def fake_encode(texts, **_kwargs):
     out = np.zeros((len(texts), DIM), dtype="float32")
     for row, text in enumerate(texts):
         for word in re.findall(r"[a-z0-9]+", text.lower()):
-            out[row, hash(word) % DIM] += 1.0
+            # crc32, not hash(): str hashes are randomised per process, which made
+            # slot collisions (and so the scores) differ between runs.
+            out[row, zlib.crc32(word.encode()) % DIM] += 1.0
         norm = np.linalg.norm(out[row])
         if norm:
             out[row] /= norm
