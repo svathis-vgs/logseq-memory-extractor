@@ -60,8 +60,14 @@ class TempEnvironment(unittest.TestCase):
             clear=False,
         )
         self.env.start()
+        # Keep extractor.log (and any other MEMORY_HOME file) out of the real
+        # ~/.logseq-memory: worker tests log synthetic runs that would otherwise
+        # show up in hook health checks.
+        self.home = mock.patch.object(shared, "MEMORY_HOME", self.root / "home")
+        self.home.start()
 
     def tearDown(self):
+        self.home.stop()
         self.env.stop()
         self.temp.cleanup()
 
@@ -267,6 +273,8 @@ class CodexWorkerTests(TempEnvironment):
         content = failed.read_text(encoding="utf-8")
         self.assertIn("synthetic failure", content)
         self.assertNotIn("SECRET TRANSCRIPT", content)
+        log = (self.root / "home" / "extractor.log").read_text(encoding="utf-8")
+        self.assertIn("codex failed session=session- synthetic failure", log)
         self.assertFalse((self.root / "state" / "running" / "session-789.json").exists())
 
     def test_resolve_session_returns_canonical_identity(self):
