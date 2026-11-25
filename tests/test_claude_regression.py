@@ -70,6 +70,7 @@ class ClaudePromptContractTests(unittest.TestCase):
         with (
             mock.patch.object(extractor, "CLAUDE_BIN", "/fake/claude"),
             mock.patch.dict(os.environ, inherited, clear=True),
+            mock.patch.object(extractor, "_hook_token", return_value=None),
             mock.patch.object(extractor.subprocess, "run", return_value=completed) as run,
         ):
             self.assertEqual(extractor.call_claude("User: test"), response)
@@ -95,8 +96,37 @@ class ClaudePromptContractTests(unittest.TestCase):
             "CLOUDSDK_PROXY_ADDRESS",
             "CLAUDECODE",
             "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_OAUTH_TOKEN",
         ):
             self.assertNotIn(removed, kwargs["env"])
+
+    def test_call_claude_uses_token_file_over_inherited_token(self):
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"structured_output": {
+                "patterns": [], "mistakes": [], "decisions": [], "context": [],
+                "session_summary": "done",
+            }}),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            token_file = Path(tmp) / "token"
+            token_file.write_text("  file-token\n", encoding="utf-8")
+            with (
+                mock.patch.object(extractor, "CLAUDE_BIN", "/fake/claude"),
+                mock.patch.dict(
+                    os.environ,
+                    {"CLAUDE_CODE_OAUTH_TOKEN": "inherited", "LOGSEQ_CLAUDE_TOKEN_FILE": str(token_file)},
+                    clear=True,
+                ),
+                mock.patch.object(extractor.subprocess, "run", return_value=completed) as run,
+            ):
+                extractor.call_claude("User: test")
+                self.assertEqual(run.call_args.kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"], "file-token")
+
+                token_file.unlink()
+                extractor.call_claude("User: test")
+                self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", run.call_args.kwargs["env"])
 
     def test_call_claude_parsing_fallbacks_are_stable(self):
         empty = {

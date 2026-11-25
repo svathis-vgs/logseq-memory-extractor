@@ -639,6 +639,15 @@ deployment.
 The extractor calls `claude -p` (the Claude Code CLI) which reuses authentication
 from your Claude Code Desktop app — no separate API key needed.
 
+That login eventually expires ("this login reached its time limit and cannot be
+renewed") and every extraction then fails until you sign in again. For unattended
+use, create a long-lived token with `claude setup-token` and store it in
+`~/.logseq-memory/claude_oauth_token` (mode 600; override the path with
+`LOGSEQ_CLAUDE_TOKEN_FILE`). When the file exists, the extractor passes it to
+`claude -p` as `CLAUDE_CODE_OAUTH_TOKEN`; otherwise it falls back to the login.
+A file is used rather than an environment variable because hooks launched by the
+desktop app do not read your shell profile.
+
 The retriever uses `sentence-transformers` entirely locally — no network calls at
 query time. The model is downloaded once on first use (~22 MB from HuggingFace)
 and cached in `~/.cache/torch/sentence_transformers/`.

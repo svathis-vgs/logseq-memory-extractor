@@ -98,6 +98,12 @@ def call_claude(transcript_text: str) -> dict:
     for key in list(env):
         if key.startswith("CLAUDE_CODE") or key == "CLAUDECODE":
             env.pop(key, None)
+    # The interactive login expires and cannot be renewed unattended. A long-lived
+    # token from `claude setup-token`, stored in a file (Desktop-launched hooks
+    # never read the shell profile), takes precedence when present.
+    token = _hook_token()
+    if token:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = token
 
     # JSON Schema enforces structured output at the API level — model cannot return prose.
     schema = json.dumps(shared.extraction_schema())
@@ -131,6 +137,21 @@ def call_claude(transcript_text: str) -> dict:
         raise RuntimeError("claude CLI returned empty output" + (f" — stderr: {detail}" if detail else ""))
 
     return shared.parse_extraction_output(raw)
+
+
+def hook_token_path() -> Path:
+    return Path(
+        os.environ.get("LOGSEQ_CLAUDE_TOKEN_FILE", str(shared.MEMORY_HOME / "claude_oauth_token"))
+    ).expanduser()
+
+
+def _hook_token() -> str | None:
+    """Return the long-lived OAuth token for `claude -p`, or None to use the login."""
+    try:
+        token = hook_token_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token or None
 
 
 def _cli_error_text(stdout: str | None) -> str:
