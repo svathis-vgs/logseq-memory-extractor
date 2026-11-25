@@ -74,6 +74,13 @@ def main() -> None:
     if os.environ.get("LOGSEQ_EXTRACTOR_RUNNING"):
         sys.exit(0)
 
+    # Surface a broken extractor on every prompt until it logs a successful run.
+    # This is about saving memories, not retrieving them, so it is shown even
+    # when retrieval is disabled or finds nothing.
+    notice = shared.extraction_failure_notice()
+    if notice:
+        print(notice + "\n")
+
     # Honour manual disable flag (shared flag, or the legacy /vault-off one)
     if any(flag.exists() for flag in shared.RETRIEVER_DISABLED_FLAGS):
         sys.exit(0)

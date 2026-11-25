@@ -167,6 +167,36 @@ class RunLogTests(unittest.TestCase):
         self.assertRegex(lines[0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d claude failed claude CLI exited with code 1: OAuth expired$")
         self.assertTrue(lines[1].endswith("codex ok session=abc"))
 
+    def write_log(self, *lines):
+        (self.home / "extractor.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_failure_notice_empty_when_last_runs_ok_or_no_log(self):
+        self.assertEqual(shared.extraction_failure_notice(), "")
+        self.write_log(
+            "2026-11-24T23:17:15 claude failed session=a expired",
+            "2026-11-25T10:00:00 claude ok session=a insights=3",
+            "2026-11-25T10:01:00 codex ok session=b",
+        )
+        self.assertEqual(shared.extraction_failure_notice(), "")
+
+    def test_failure_notice_counts_trailing_failures_per_source(self):
+        self.write_log(
+            "2026-11-24T19:00:00 claude ok session=a insights=3",
+            "2026-11-24T23:17:15 claude failed session=a login expired",
+            "2026-11-25T08:00:00 codex ok session=b",
+            "2026-11-25T09:20:56 claude error KeyError: 'x' (at y.py:1)",
+            "2026-11-25T10:09:54 claude failed session=c 401 Invalid bearer token",
+        )
+        notice = shared.extraction_failure_notice()
+        self.assertEqual(len(notice.splitlines()), 1)
+        self.assertIn("the last 3 runs have failed for claude since 2026-11-24 23:17:15", notice)
+        self.assertIn("Last error: session=c 401 Invalid bearer token", notice)
+        self.assertNotIn("codex", notice)
+
+    def test_failure_notice_single_failure_wording(self):
+        self.write_log("2026-11-25T10:00:00 codex failed session=b boom")
+        self.assertIn("the last run has failed for codex", shared.extraction_failure_notice())
+
     def test_trims_itself(self):
         with mock.patch.object(shared, "RUN_LOG_MAX_BYTES", 2000):
             for i in range(200):

@@ -648,6 +648,14 @@ use, create a long-lived token with `claude setup-token` and store it in
 A file is used rather than an environment variable because hooks launched by the
 desktop app do not read your shell profile.
 
+**Failure notice** — hooks run with stderr discarded, so a broken extractor used
+to go unnoticed (once for nine days, once for a day). The UserPromptSubmit
+retriever now reads the tail of `extractor.log` and, for each source (`claude`,
+`codex`) whose most recent run is `failed` or `error`, prints a one-line warning
+with the failure count, first failure time and last error ahead of any vault
+matches. It is shown even when retrieval is disabled or finds nothing, and
+clears as soon as that source logs a later `ok`.
+
 The retriever uses `sentence-transformers` entirely locally — no network calls at
 query time. The model is downloaded once on first use (~22 MB from HuggingFace)
 and cached in `~/.cache/torch/sentence_transformers/`.

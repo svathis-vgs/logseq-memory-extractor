@@ -159,6 +159,47 @@ def log_run(source: str, status: str, message: str = "") -> None:
         pass
 
 
+def extraction_failure_notice(tail_bytes: int = 64 * 1024) -> str:
+    """One warning line per source whose most recent extraction run failed.
+
+    Read by the UserPromptSubmit hook so a broken extractor (expired login,
+    invalid token, ...) surfaces on the next prompt instead of going unnoticed
+    for days. A source recovers as soon as it logs a later `ok`. Returns "" when
+    every source's last run succeeded or the log cannot be read; never raises.
+    """
+    try:
+        with run_log_path().open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - tail_bytes))
+            lines = handle.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+
+    # source -> [consecutive trailing failures, first failure time, last message]
+    failing: dict[str, list] = {}
+    for line in lines:
+        parts = line.split(" ", 3)
+        if len(parts) < 3:
+            continue
+        stamp, source, status = parts[0], parts[1], parts[2]
+        message = parts[3] if len(parts) > 3 else ""
+        if status == "ok":
+            failing.pop(source, None)
+        elif status in ("failed", "error"):
+            entry = failing.setdefault(source, [0, stamp, ""])
+            entry[0] += 1
+            entry[2] = message
+    notices = []
+    for source, (count, since, message) in sorted(failing.items()):
+        runs = "run has" if count == 1 else f"{count} runs have"
+        notices.append(
+            f"⚠️ Vault extraction is failing: the last {runs} failed for {source} "
+            f"since {since.replace('T', ' ')}. Last error: {message[:240]}. "
+            f"New sessions are not being saved; tell the user and check {run_log_path()}."
+        )
+    return "\n".join(notices)
+
+
 def find_cli(name: str) -> str:
     """Resolve an agent CLI (claude / codex) from PATH, config.json, or the
     usual install locations. GUI apps start hooks without the shell PATH."""

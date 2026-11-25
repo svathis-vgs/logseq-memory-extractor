@@ -429,6 +429,18 @@ class AdjacentClaudeComponentTests(unittest.TestCase):
         with mock.patch.object(retriever, "INDEX_PATH", Path("/does/not/exist")):
             self.assertEqual(retriever.retrieve("anything"), [])
 
+    def test_retriever_prints_failure_notice_even_without_a_query(self):
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(retriever.shared, "extraction_failure_notice", return_value="⚠️ broken"),
+            mock.patch("sys.stdin", io.StringIO('{"prompt": "hi"}')),
+            contextlib.redirect_stdout(out),
+        ):
+            with self.assertRaises(SystemExit):
+                retriever.main()
+        self.assertEqual(out.getvalue(), "⚠️ broken\n\n")
+
     def test_manual_mcp_writer_is_byte_frozen(self):
         with tempfile.TemporaryDirectory() as tmp:
             pages = Path(tmp) / "pages"
