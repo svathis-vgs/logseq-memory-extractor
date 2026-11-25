@@ -575,7 +575,11 @@ def update_vault_index(new_paths: list[Path], index_path: Path) -> None:
 # a genuinely different insight (a correction) and ~60% were near-duplicates
 # carrying one extra detail — so a match appends an update to the existing
 # page instead of silently dropping the new note.
-SEMANTIC_DEDUP_THRESHOLD = float(os.environ.get("LOGSEQ_DEDUP_MIN_SCORE", "0.88"))
+# Lowered to 0.80 on 2026-11-25: consolidation passes kept finding paraphrased
+# repeats in the 0.75–0.88 band written as new pages. Below ~0.86 a match is
+# more often a different insight, but it is appended (not dropped), so the cost
+# is a mis-filed Update block rather than lost content.
+SEMANTIC_DEDUP_THRESHOLD = float(os.environ.get("LOGSEQ_DEDUP_MIN_SCORE", "0.80"))
 _EMBEDDING_MODEL = None
 
 
@@ -1050,3 +1054,96 @@ def vault_lock(path: Path | None = None):
             else:
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+# ── Incremental extraction ─────────────────────────────────────────────────────
+# The Claude Stop hook fires after every reply, not once per session. Without
+# state, each run re-extracts the same trailing window of the transcript and the
+# vault fills with near-duplicate pages. extracted_sessions.json records, per
+# session, how much of the raw transcript (in characters) has been extracted;
+# later runs send only the new part, and only once its parsed conversation text
+# reaches MIN_NEW_TRANSCRIPT_CHARS.
+MIN_NEW_TRANSCRIPT_CHARS = int(os.environ.get("LOGSEQ_MIN_NEW_CHARS", "4000"))
+FLUSH_MIN_CHARS = 200  # same floor as the original "session too short" check
+EXTRACTION_STATE_MAX_SESSIONS = 2000
+
+
+def extraction_state_path() -> Path:
+    return Path(
+        os.environ.get("LOGSEQ_EXTRACTION_STATE", str(MEMORY_HOME / "extracted_sessions.json"))
+    ).expanduser()
+
+
+def _load_extraction_state(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_extraction_state(path: Path, state: dict) -> None:
+    if len(state) > EXTRACTION_STATE_MAX_SESSIONS:
+        newest = sorted(state.items(), key=lambda kv: str(kv[1].get("updated", "")))
+        state = dict(newest[-EXTRACTION_STATE_MAX_SESSIONS:])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state, indent=1, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def claim_new_transcript(
+    session_id: str,
+    raw: str,
+    min_new_chars: int | None = None,
+    state_path: Path | None = None,
+    parse: Callable[[str], str] | None = None,
+) -> tuple[str, int, int] | None:
+    """Reserve the not-yet-extracted part of a session transcript.
+
+    Returns (parsed_new_text, previous_offset, new_offset), or None when the new
+    part is too short to be worth a run. The offset is saved before the slow
+    model call, so a second Stop hook for the same session cannot extract the
+    same part concurrently; call release_transcript_claim() if extraction then
+    fails. A transcript shorter than the stored offset (rewritten or replaced)
+    is treated as new from the start.
+    """
+    from datetime import datetime
+
+    path = state_path or extraction_state_path()
+    minimum = MIN_NEW_TRANSCRIPT_CHARS if min_new_chars is None else min_new_chars
+    with vault_lock():
+        state = _load_extraction_state(path)
+        entry = state.get(session_id)
+        previous = int(entry.get("offset", 0) or 0) if isinstance(entry, dict) else 0
+        if previous > len(raw):
+            previous = 0
+        text = (parse or parse_transcript)(raw[previous:])
+        if len(text) < max(minimum, FLUSH_MIN_CHARS):
+            return None
+        state[session_id] = {
+            "offset": len(raw),
+            "updated": datetime.now().isoformat(timespec="seconds"),
+        }
+        _save_extraction_state(path, state)
+    return text, previous, len(raw)
+
+
+def release_transcript_claim(
+    session_id: str, previous: int, claimed: int, state_path: Path | None = None
+) -> None:
+    """Undo a claim after a failed extraction, unless a later run moved past it."""
+    path = state_path or extraction_state_path()
+    try:
+        with vault_lock():
+            state = _load_extraction_state(path)
+            entry = state.get(session_id)
+            if not isinstance(entry, dict) or int(entry.get("offset", -1)) != claimed:
+                return
+            if previous:
+                entry["offset"] = previous
+            else:
+                state.pop(session_id, None)
+            _save_extraction_state(path, state)
+    except OSError:
+        pass

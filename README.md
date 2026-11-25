@@ -398,6 +398,8 @@ These controls, mostly in `logseq_memory_shared.py`, keep the vault from growing
 
 **Extraction prompt** — instructs the extractor to only capture non-obvious, project-specific insights (max 5 per category per session). Empirically cuts the daily accumulation rate from ~330 to ~140 files/day.
 
+**Incremental extraction** — the Claude Stop hook fires after every reply, so without state each run re-extracted the same trailing 12,000-character window and wrote the same lesson several times. `~/.logseq-memory/extracted_sessions.json` now stores, per session, how much of the raw transcript has been extracted. A run sends only the new part, and only once its parsed conversation text reaches `LOGSEQ_MIN_NEW_CHARS` (default 4000); shorter runs exit silently and the new text accumulates. The offset is claimed before the model call and released if extraction fails, so a failed run (e.g. an expired `claude` login) is retried by the next Stop. A payload with `"hook_event_name": "SessionEnd"` flushes the remainder down to the 200-character floor. Trade-off: if no SessionEnd hook is registered, up to `LOGSEQ_MIN_NEW_CHARS` of the final exchanges of a session are never extracted. To re-extract a session from scratch, delete its entry from the state file.
+
 **Extraction schema cap** — `extraction_schema()` declares `maxItems: 5` on each category array, enforced at the structured-output API level rather than left as a prompt instruction the model can silently exceed. Added after a single Stop hook extraction call produced 20 files in one category on an eventful session — the prompt asked for at most 5 but nothing stopped the model from returning more.
 
 **write_pages hard truncate** — `write_pages()` additionally truncates each category's insight list to 5 items before writing, independent of the schema cap. No caller (Stop hook or `write_codex_insight`) can write more than 5 files per category in one call, regardless of what upstream extraction returns.
@@ -406,7 +408,7 @@ These controls, mostly in `logseq_memory_shared.py`, keep the vault from growing
 
 **Slug near-match dedup** — before writing a new file, every writer calls `find_slug_duplicate()` and skips the write if the category already has a file with the same slug or the same first three slug words (e.g. `kafka-rebalance-storm` blocks `kafka-rebalance-storm-recovery`, but not `kafka-rebalance-recovery`). Two words proved too broad: `access-logger-*` and `write-insight-*` silently blocked unrelated pages (`write_insight` moved to three words in July 2026, the batch writers on 2026-10-17).
 
-**Semantic dedup (append, not skip)** — after the slug checks, every write path (Stop hook, Codex adapter, `write_insight`, `write_codex_insight`) embeds the new note's `title. summary` and compares it with `vault_index.npz`. If an existing page in the same category directory scores at or above `LOGSEQ_DEDUP_MIN_SCORE` (default `0.88`, cosine), no new file is written: the note is appended to that page as a `## Update <date>` block (summary, source session, detail) and `last-updated::` is bumped. `write_insight(force=true)` writes a separate page anyway. Fails open: no numpy, no sentence-transformers or no index means the slug checks alone apply.
+**Semantic dedup (append, not skip)** — after the slug checks, every write path (Stop hook, Codex adapter, `write_insight`, `write_codex_insight`) embeds the new note's `title. summary` and compares it with `vault_index.npz`. If an existing page in the same category directory scores at or above `LOGSEQ_DEDUP_MIN_SCORE` (default `0.80`, cosine; was `0.88` until 2026-11-25), no new file is written: the note is appended to that page as a `## Update <date>` block (summary, source session, detail) and `last-updated::` is bumped. `write_insight(force=true)` writes a separate page anyway. Fails open: no numpy, no sentence-transformers or no index means the slug checks alone apply.
 
 The threshold was calibrated on 112 blind-labelled nearest-neighbour pairs from the live vault (2026-10-17). At ≥0.88 about 1 in 40 matches was a genuinely different insight (a correction) and ~60% were near-duplicates carrying one extra detail, which is why matches append rather than skip. Below ~0.86 different insights become common. Loose paraphrases often score 0.70–0.85, so this reduces but does not replace periodic consolidation. `write_insight` also appends its page to the index, so later writes in the same session see it. The calibration data is not stored in this repo.
 
@@ -655,7 +657,7 @@ variable, so `claude -p` authenticates as a fresh CLI invocation.
 Paths come from `logseq_memory_shared.py` and can be overridden by environment:
 `LOGSEQ_PAGES_DIR`, `LOGSEQ_MEMORY_HOME`, `LOGSEQ_INDEX_PATH`, `LOGSEQ_LOCK_PATH`
 (see [Configure paths](#2-configure-paths)) and `LOGSEQ_DEDUP_MIN_SCORE`
-(semantic-dedup threshold, default `0.88`). The remaining settings below are
+(semantic-dedup threshold, default `0.80`). The remaining settings below are
 module constants. Codex adapter variables are listed in the Codex section.
 
 ### logseq_memory_extractor.py
@@ -695,7 +697,9 @@ module constants. Codex adapter variables are listed in the Codex section.
 | Constant | Default | Description |
 |----------|---------|-------------|
 | `MAX_ITEMS_PER_CATEGORY` | `5` | Schema `maxItems` and hard truncate per category per batch |
-| `SEMANTIC_DEDUP_THRESHOLD` | `0.88` (env `LOGSEQ_DEDUP_MIN_SCORE`) | Cosine score at which a note is appended to an existing page |
+| `SEMANTIC_DEDUP_THRESHOLD` | `0.80` (env `LOGSEQ_DEDUP_MIN_SCORE`) | Cosine score at which a note is appended to an existing page |
+| `MIN_NEW_TRANSCRIPT_CHARS` | `4000` (env `LOGSEQ_MIN_NEW_CHARS`) | New parsed conversation text needed before a Stop run extracts again |
+| `extraction_state_path()` | `~/.logseq-memory/extracted_sessions.json` (env `LOGSEQ_EXTRACTION_STATE`) | Per-session extracted offset |
 
 ## License
 

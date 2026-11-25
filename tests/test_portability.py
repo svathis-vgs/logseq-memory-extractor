@@ -204,7 +204,7 @@ class ExtractorRunLogTests(unittest.TestCase):
         failed = mock.Mock(returncode=1, stderr="",
                            stdout='{"is_error":true,"result":"OAuth session expired"}')
         with mock.patch.object(self.extractor, "find_transcript", return_value="x" * 10), \
-                mock.patch.object(self.extractor, "parse_transcript", return_value="y" * 300), \
+                mock.patch.object(self.extractor, "parse_transcript", return_value="y" * 5000), \
                 mock.patch.object(self.extractor.subprocess, "run", return_value=failed), \
                 mock.patch("sys.stdin", mock.Mock(read=lambda: '{"session_id": "abcdef123"}')):
             with self.assertRaises(SystemExit):
@@ -219,6 +219,66 @@ class ExtractorRunLogTests(unittest.TestCase):
             with self.assertRaises(KeyError):
                 self.extractor.main()
         self.assertRegex(self.log(), r"claude error KeyError: 'boom' \(at \S+\.py:\d+\)")
+
+    def test_failed_extraction_releases_the_claim(self):
+        failed = mock.Mock(returncode=1, stderr="", stdout="")
+        with mock.patch.object(self.extractor, "find_transcript", return_value="x" * 10), \
+                mock.patch.object(self.extractor, "parse_transcript", return_value="y" * 5000), \
+                mock.patch.object(self.extractor.subprocess, "run", return_value=failed), \
+                mock.patch("sys.stdin", mock.Mock(read=lambda: '{"session_id": "abcdef123"}')):
+            with self.assertRaises(SystemExit):
+                self.extractor.main()
+        state = json.loads((self.home / "extracted_sessions.json").read_text(encoding="utf-8"))
+        self.assertNotIn("abcdef123", state)
+
+
+class IncrementalExtractionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.patch = mock.patch.object(shared, "MEMORY_HOME", self.home)
+        self.patch.start()
+        self.state = self.home / "extracted_sessions.json"
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def claim(self, raw, minimum=100):
+        return shared.claim_new_transcript("s1", raw, minimum, parse=lambda text: text)
+
+    def test_only_new_text_is_claimed_once_enough_accumulates(self):
+        self.assertEqual(self.claim("a" * 300), ("a" * 300, 0, 300))
+        self.assertIsNone(self.claim("a" * 300))  # nothing new
+        self.assertIsNone(self.claim("a" * 300 + "b" * 50))  # below the minimum
+        self.assertEqual(self.claim("a" * 300 + "b" * 250), ("b" * 250, 300, 550))
+
+    def test_minimum_never_drops_below_the_flush_floor(self):
+        self.assertIsNone(self.claim("a" * 150, minimum=0))
+        self.assertIsNotNone(self.claim("a" * 250, minimum=0))
+
+    def test_shorter_transcript_restarts_from_zero(self):
+        self.claim("a" * 600)
+        self.assertEqual(self.claim("c" * 300), ("c" * 300, 0, 300))
+
+    def test_release_restores_previous_offset_only_if_unchanged(self):
+        self.claim("a" * 300)
+        _, previous, claimed = self.claim("a" * 600)
+        shared.release_transcript_claim("s1", previous, claimed)
+        self.assertEqual(json.loads(self.state.read_text())["s1"]["offset"], 300)
+        _, previous, claimed = self.claim("a" * 600)
+        self.claim("a" * 900)  # a later run moved past the claim
+        shared.release_transcript_claim("s1", previous, claimed)
+        self.assertEqual(json.loads(self.state.read_text())["s1"]["offset"], 900)
+
+    def test_release_of_first_claim_forgets_the_session(self):
+        _, previous, claimed = self.claim("a" * 300)
+        shared.release_transcript_claim("s1", previous, claimed)
+        self.assertNotIn("s1", json.loads(self.state.read_text()))
+
+    def test_corrupt_state_file_is_treated_as_empty(self):
+        self.state.write_text("{not json", encoding="utf-8")
+        self.assertEqual(self.claim("a" * 300)[1], 0)
 
 
 if __name__ == "__main__":

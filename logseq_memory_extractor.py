@@ -277,10 +277,35 @@ def _run() -> None:
 
     conversation_title = extract_conversation_title(transcript_raw)
     models = extract_models(transcript_raw)
-    transcript_text = parse_transcript(transcript_raw)
-    if len(transcript_text) < 200:
-        sys.exit(0)  # Session too short to be worth extracting
 
+    # Stop fires after every reply: extract only the part of the transcript not
+    # yet extracted, and only once enough of it has accumulated. A SessionEnd
+    # payload flushes whatever is left down to the old 200-character floor.
+    flush = payload.get("hook_event_name") == "SessionEnd"
+    claim = shared.claim_new_transcript(
+        session_id,
+        transcript_raw,
+        shared.FLUSH_MIN_CHARS if flush else None,
+        parse=parse_transcript,
+    )
+    if claim is None:
+        sys.exit(0)  # Too little new conversation since the last extraction
+    transcript_text, previous_offset, claimed_offset = claim
+
+    try:
+        _extract_and_write(session_id, project_dir, transcript_text, conversation_title, models)
+    except BaseException:
+        shared.release_transcript_claim(session_id, previous_offset, claimed_offset)
+        raise
+
+
+def _extract_and_write(
+    session_id: str,
+    project_dir: str,
+    transcript_text: str,
+    conversation_title: str,
+    models: list[str],
+) -> None:
     try:
         insights = call_claude(transcript_text)
     except Exception as e:
